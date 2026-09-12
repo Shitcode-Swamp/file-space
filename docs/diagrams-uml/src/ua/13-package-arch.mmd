@@ -1,0 +1,35 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}, 'flowchart': {'subGraphTitleMargin': {'top': 10, 'bottom': 15}}}}%%
+flowchart TB
+    subgraph FE["«package» frontend (React + TS)"]
+        direction TB
+        FEUi["ui / components<br/>(файлова таблиця, перегляд)"]
+        FEState["api client<br/>(TanStack Query, TanStack Table)"]
+    end
+
+    subgraph DE["«package» desktop (Swift)"]
+        direction TB
+        DEUi["SwiftUI views"]
+        DESync["SyncEngine<br/>(FSEvents, sync cursor)"]
+    end
+
+    subgraph BE["«package» backend (Go module)"]
+        direction TB
+        subgraph BEHandler["«package» handler<br/>(cmd/api, internal/handler)"]
+        end
+        subgraph BEService["«package» service<br/>(internal/service)"]
+        end
+        subgraph BERepo["«package» repo<br/>(internal/repo)"]
+        end
+        subgraph BEStorage["«package» storage<br/>(internal/storage, FileStorage)"]
+        end
+        BEHandler -. "викликає" .-> BEService
+        BEService -. "викликає" .-> BERepo
+        BEService -. "викликає" .-> BEStorage
+    end
+
+    subgraph MIG["«package» migrations<br/>(golang-migrate SQL)"]
+    end
+
+    FEState -. "HTTPS / JSON REST" .-> BEHandler
+    DESync -. "HTTPS / JSON REST" .-> BEHandler
+    BERepo -. "визначає схему за" .-> MIG

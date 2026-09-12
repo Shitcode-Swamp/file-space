@@ -133,7 +133,7 @@ Fig.~\ref{fig:deployment} displays the physical topology of the system: client d
 \section{Detailed Design}
 % =====================================================================
 
-Detailed design reveals the internal structure and behavior of individual subsystems: the classes participating in the implementation of a specific use case (VOPC diagram), the interaction of objects over time (sequence diagrams), the behavior of a file depending on its synchronization state (state diagram), the structure of software components (component diagram), and the business-process logic of synchronization (activity diagram).
+Detailed design reveals the internal structure and behavior of individual subsystems: the classes participating in the implementation of a specific use case (VOPC diagram), a concrete runtime snapshot of objects during a conflict (object diagram), the interaction of objects over time -- shown both in a time-ordered (sequence) and a structural (communication) notation --, the behavior of a file depending on its synchronization state (state diagram), the structure of software components (component diagram), the modular organization of the code (package diagram), and the business-process logic of synchronization (activity diagram).
 
 % ---------------------------------------------------------------------
 \subsection{VOPC Class Diagram for the ``Synchronize local folder with remote'' use case}
@@ -150,10 +150,20 @@ According to the assignment variant, the use case chosen for the VOPC diagram (\
 \diagramland{img/en/03-class-vopc-sync.pdf}{VOPC class diagram for the ``Synchronize local folder with remote'' use case}{0.98}{fig:vopc}
 
 % ---------------------------------------------------------------------
-\subsection{Interaction Diagrams (Sequence Diagrams)}
+\subsection{Object Diagram (Conflict Snapshot)}
 % ---------------------------------------------------------------------
 
-Three sequence diagrams are presented, illustrating key interaction scenarios between the client, the Go API server, and the database.
+Unlike class diagrams, which describe the structure of types, an object diagram (fig.~\ref{fig:object}) captures a \emph{concrete runtime snapshot} of instances -- one moment of the synchronization scenario at which a conflict is detected (requirements section 6.2, the ``exists, hash differs'' case). The local instance \texttt{localFile} (version 44, computed on the client) and the server-side \texttt{remoteFile} (version 45) share the same name and \texttt{id}, but differ in \texttt{sha256} -- the signature of edits made on both sides. The \texttt{cl1 : ChangeLogEntry} record confirms that version 45 is newer than the \texttt{lastSyncedVersion = 42} stored in the client's cursor, i.e. the server-side change happened after the last successful sync.
+
+\emph{Notation note:} Mermaid has no built-in object diagram type, so the instances were built using \texttt{flowchart}: each object's header is labeled per the UML convention as \underline{instance\_name~:~Class}, with concrete attribute values listed below a separator.
+
+\diagramland{img/en/12-object-conflict.pdf}{Object diagram: state snapshot during an editing conflict}{0.9}{fig:object}
+
+% ---------------------------------------------------------------------
+\subsection{Interaction Diagrams (Sequence \& Communication Diagrams)}
+% ---------------------------------------------------------------------
+
+Three sequence diagrams are presented, illustrating key interaction scenarios between the client, the Go API server, and the database, together with a communication diagram as an alternative representation of one of these scenarios.
 
 \subsubsection*{Authentication}
 
@@ -173,6 +183,14 @@ Fig.~\ref{fig:seq-sync} details the \texttt{POST /api/sync/diff} protocol (secti
 
 \diagramland{img/en/07-seq-sync.pdf}{Sequence diagram: synchronization and conflict resolution}{0.98}{fig:seq-sync}
 
+\subsubsection*{The Same Scenario as a Communication Diagram}
+
+Fig.~\ref{fig:comm-sync} depicts \textbf{the same} synchronization and conflict-resolution scenario as fig.~\ref{fig:seq-sync}, but in communication-diagram notation: the emphasis shifts from the time axis to the static links between objects, and message ordering is conveyed through numbering (with decimal nesting for messages inside conditional branches -- e.g. \texttt{5.1--5.3} for the user interaction in the conflict case). Both diagrams are consistent with each other -- they use the same objects and messages -- and together demonstrate the two standard ways of depicting one interaction.
+
+\emph{Notation note:} Mermaid has no built-in communication diagram type, so it was built using \texttt{flowchart}: objects are graph nodes, and the numbered edge labels correspond to messages.
+
+\diagramland{img/en/11-comm-sync.pdf}{Communication diagram: synchronization and conflict resolution}{0.95}{fig:comm-sync}
+
 % ---------------------------------------------------------------------
 \subsection{State Diagram}
 % ---------------------------------------------------------------------
@@ -190,6 +208,16 @@ Fig.~\ref{fig:component} details the software components of the system and their
 \diagram{img/en/09-component.pdf}{Component diagram of the system}{0.9}{fig:component}
 
 % ---------------------------------------------------------------------
+\subsection{Package Diagram}
+% ---------------------------------------------------------------------
+
+Where the component diagram (fig.~\ref{fig:component}) shows runtime components and the interfaces between them, the package diagram (fig.~\ref{fig:package}) shows the \emph{static} organization of the code into modules, following the planned repository layout (\texttt{backend}, \texttt{frontend}, \texttt{desktop}, \texttt{migrations}): inside the Go module, a layered package structure \texttt{handler} $\to$ \texttt{service} $\to$ \texttt{repo}/\texttt{storage}, matching the ``no direct filesystem calls from handlers'' convention and the principle of accessing storage only through the \texttt{FileStorage} interface. The \texttt{repo} package additionally depends on the schema defined in \texttt{migrations}.
+
+\emph{Notation note:} Mermaid has no built-in package diagram type, so packages are shown as nested \texttt{subgraph} blocks (with a \texttt{«package»} stereotype in the title), and dependencies as dashed arrows labeled with the dependency action.
+
+\diagram{img/en/13-package-arch.pdf}{Package diagram: code organization by module}{0.95}{fig:package}
+
+% ---------------------------------------------------------------------
 \subsection{Activity Diagram}
 % ---------------------------------------------------------------------
 
@@ -201,6 +229,6 @@ Fig.~\ref{fig:activity} details the business logic of a single synchronization c
 \section{Conclusions}
 % =====================================================================
 
-The developed set of diagrams consistently reveals the Remote File Folder Client system from business requirements to detailed structure and behavior: the use case diagram captures the user's functional scenarios; the general class diagram and the deployment diagram define the architectural framework; the VOPC diagram, along with the sequence, state, component, and activity diagrams, detail the implementation of the most complex scenario -- synchronizing files between the local and remote folder, including the manifest-comparison protocol and editing-conflict resolution. The constructed diagrams are mutually consistent (shared classes, entities, and actions) and serve as a foundation for the further development and testing of the system.
+The developed set of diagrams consistently reveals the Remote File Folder Client system from business requirements to detailed structure and behavior: the use case diagram captures the user's functional scenarios; the general class diagram and the deployment diagram define the architectural framework; the VOPC diagram, the object diagram, the sequence and communication diagrams, and the state, component, package, and activity diagrams detail the implementation of the most complex scenario -- synchronizing files between the local and remote folder, including the manifest-comparison protocol and editing-conflict resolution. In particular, the object diagram and the communication diagram complement the VOPC diagram and the sequence diagrams, respectively, with a concrete state snapshot and an alternative (structural rather than time-based) notation for the same scenario, while the package diagram captures the static modular organization of the code, consistent with the planned repository layout. The constructed diagrams are mutually consistent (shared classes, entities, and actions) and serve as a foundation for the further development and testing of the system.
 
 \end{document}

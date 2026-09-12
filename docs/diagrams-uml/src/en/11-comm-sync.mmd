@@ -1,0 +1,28 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+flowchart TB
+    U(("User"))
+    W["w : FSEvents<br/>(watcher, Swift)"]
+    SC["sc : SyncController<br/>(Swift client)"]
+    H["h : SyncHandler<br/>(Go API)"]
+    SS["ss : SyncDiffService"]
+    REP["rep : FileRepository"]
+    DB[("db : PostgreSQL")]
+    CD["cd : ConflictDialogUI"]
+    EXEC(["execute action<br/>locally"])
+    CURSOR(["lastSyncedVersion<br/>:= newVersion"])
+
+    W -->|"1: local folder<br/>change event"| SC
+    SC -->|"2: POST /api/sync/diff(...)"| H
+    H -->|"2.1: computeDiff(...)"| SS
+    SS -->|"2.1.1: findChangedSince(...)"| REP
+    REP -->|"2.1.1.1: SELECT files,<br/>change_log"| DB
+    DB -->|"2.1.1.2: rows"| REP
+    REP -->|"2.1.2: files, versions"| SS
+    SS -->|"2.2: { actions[] }"| H
+    H -->|"3: 200 OK { actions[] }"| SC
+    SC -->|"4: [action != conflict]"| EXEC
+    SC -->|"5: [action == conflict]"| CD
+    CD -->|"5.1: askUserResolution()"| U
+    U -->|"5.2: keep local /<br/>remote / both"| CD
+    CD -->|"5.3: decision"| SC
+    SC -->|"6: save newVersion"| CURSOR

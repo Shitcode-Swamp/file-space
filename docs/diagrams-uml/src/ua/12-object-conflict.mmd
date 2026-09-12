@@ -1,0 +1,21 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+flowchart TB
+    cursor["<b><u>cursor1 : SyncCursor</u></b><br/>─────────────<br/>lastSyncedVersion = 42"]
+
+    manifest["<b><u>m1 : ManifestEntry</u></b><br/>─────────────<br/>name = &quot;Notes.java&quot;<br/>size = 1240<br/>mtime = 2026-09-11T14:02:00<br/>sha256 = &quot;9e1a...c4&quot;"]
+
+    localFile["<b><u>localFile : File</u></b><br/>─────────────<br/>id = f-8f21<br/>name = &quot;Notes.java&quot;<br/>size = 1240<br/>version = 44<br/>sha256 = &quot;9e1a...c4&quot;"]
+
+    remoteFile["<b><u>remoteFile : File</u></b><br/>─────────────<br/>id = f-8f21<br/>name = &quot;Notes.java&quot;<br/>size = 1305<br/>version = 45<br/>sha256 = &quot;7c3d...11&quot;"]
+
+    changeLog["<b><u>cl1 : ChangeLogEntry</u></b><br/>─────────────<br/>fileId = f-8f21<br/>changeType = &quot;edit&quot;<br/>version = 45"]
+
+    diff["<b><u>ss1 : SyncDiffService</u></b>"]
+
+    manifest -- "описує поточний<br/>локальний стан" --> localFile
+    diff -- "порівнює" --> manifest
+    diff -- "з версією" --> remoteFile
+    diff -- "читає" --> cursor
+    changeLog -- "версія 45 &gt;<br/>lastSyncedVersion 42" --> cursor
+    diff -- "sha256 різний →<br/>дія = conflict" --> localFile
+    diff -.->|"дія = conflict"| remoteFile
