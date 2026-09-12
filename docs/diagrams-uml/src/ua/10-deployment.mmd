@@ -1,0 +1,36 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}, 'flowchart': {'subGraphTitleMargin': {'top': 10, 'bottom': 15}}}}%%
+flowchart TB
+    subgraph N1["«device» Пристрій користувача<br/>(браузер)"]
+        A1["«artifact»<br/>React SPA"]
+    end
+
+    subgraph N2["«device» macOS<br/>(десктоп)"]
+        A2["«artifact»<br/>Swift-застосунок<br/>+ Keychain"]
+    end
+
+    subgraph N3["«node» Cloudflare Edge"]
+        A3["«service»<br/>Термінація TLS,<br/>публічний DNS"]
+    end
+
+    subgraph N4["«node» Ubuntu Home Server<br/>(Docker Compose)"]
+        direction TB
+        subgraph C1["«execution environment»<br/>container: cloudflared"]
+            A4["cloudflared tunnel"]
+        end
+        subgraph C2["«execution environment»<br/>container: api"]
+            A5["«artifact»<br/>Go API binary"]
+        end
+        subgraph C3["«execution environment»<br/>container: db"]
+            A6["«artifact»<br/>PostgreSQL 16"]
+        end
+        V1[("volume: pgdata")]
+        V2[("bind mount:<br/>./storage")]
+        C3 --- V1
+        C2 --- V2
+    end
+
+    N1 -- "HTTPS" --> N3
+    N2 -- "HTTPS" --> N3
+    N3 -- "outbound tunnel" --> C1
+    C1 -- "localhost" --> C2
+    C2 -- "TCP/5432" --> C3

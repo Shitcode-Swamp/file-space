@@ -1,0 +1,27 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+sequenceDiagram
+    actor U as User
+    participant C as Client<br/>(React / Swift)
+    participant H as AuthHandler<br/>(Go API)
+    participant S as AuthService
+    participant R as UserRepository
+    participant DB as PostgreSQL
+
+    U->>C: Enter email/password
+    C->>H: POST /api/auth/login
+    H->>S: login(email, password)
+    S->>R: findByEmail(email)
+    R->>DB: SELECT * FROM users
+    DB-->>R: user row
+    R-->>S: User
+    S->>S: bcrypt.compare(password, hash)
+    alt password correct
+        S->>S: generate access + refresh token
+        S-->>H: Session
+        H-->>C: 200 OK { accessToken, refreshToken }
+        C-->>U: Navigate to workspace (drive)
+    else password incorrect
+        S-->>H: authentication error
+        H-->>C: 401 Unauthorized
+        C-->>U: Show error message
+    end

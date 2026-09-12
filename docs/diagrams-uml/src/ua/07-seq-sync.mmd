@@ -1,0 +1,33 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+sequenceDiagram
+    actor U as Користувач
+    participant W as FSEvents<br/>(watcher, Swift)
+    participant SC as SyncController<br/>(Swift-клієнт)
+    participant H as SyncHandler<br/>(Go API)
+    participant SS as SyncDiffService
+    participant REP as FileRepository
+    participant DB as PostgreSQL
+
+    W->>SC: подія зміни локальної теки
+    SC->>SC: обчислити маніфест<br/>{name, size, mtime, sha256}
+    SC->>H: POST /api/sync/diff<br/>{manifest, lastSyncedVersion}
+    H->>SS: computeDiff(manifest, lastSyncedVersion)
+    SS->>REP: findChangedSince(lastSyncedVersion)
+    REP->>DB: SELECT files, change_log
+    DB-->>REP: rows
+    REP-->>SS: список файлів і версій
+    SS->>SS: порівняти hash/версії,<br/>визначити дію для файлу
+    SS-->>H: { newVersion, actions[] }
+    H-->>SC: 200 OK { newVersion, actions[] }
+
+    loop для кожної дії
+        alt action == upload/download/delete_local/noop
+            SC->>SC: виконати дію локально
+        else action == conflict
+            SC->>U: показати діалог конфлікту
+            U-->>SC: Keep local / Keep remote / Keep both
+            SC->>SC: застосувати вибір користувача
+        end
+    end
+
+    SC->>SC: зберегти newVersion як lastSyncedVersion

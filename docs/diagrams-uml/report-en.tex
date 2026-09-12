@@ -1,0 +1,206 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Language & fonts ----------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{english}
+
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+
+% ---------- Layout ----------
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{pdflscape}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+    pdftitle={UML Diagrams of the Remote File Folder Client Project},
+    pdfauthor={Yana Utochkina}
+}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
+\newcommand{\diagram}[4]{%
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=#3\linewidth,height=0.8\textheight,keepaspectratio]{#1}
+        \caption{#2}
+        \label{#4}
+    \end{figure}
+}
+
+% Variant for wide diagrams (classes, sequence): places the figure on a
+% landscape page to get significantly more horizontal space and avoid
+% overly small scaling of the content.
+\newcommand{\diagramland}[4]{%
+    \begin{landscape}
+        \begin{figure}[H]
+            \centering
+            \includegraphics[width=#3\linewidth,height=0.85\textheight,keepaspectratio]{#1}
+            \caption{#2}
+            \label{#4}
+        \end{figure}
+    \end{landscape}
+}
+
+\title{\textbf{UML Diagrams of the\\[2pt] \large Remote File Folder Client Project\\(a simplified Google Drive analogue)}}
+\author{Yana Utochkina}
+\date{Stage: Architecture and Behavior Design \\ \today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+This document presents a set of UML diagrams for the \textbf{Remote File Folder Client} project --- an application for working with a remote file folder (a simplified analogue of Google Drive) with web and desktop clients, a Go backend, PostgreSQL, and file synchronization based on diff manifests. The diagrams are ordered according to the design lifecycle: from requirements analysis and high-level architecture to the detailed design of individual subsystems. All diagrams were built using Mermaid notation.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Requirements Analysis}
+% =====================================================================
+
+The system gives an authenticated user access to a personal remote folder (a ``virtual drive''), where they can view the list of files along with their attributes (name, creation date, modification date, uploader, last editor), upload, download, and delete files, as well as synchronize a chosen local directory with the remote one.
+
+Key functional requirements:
+
+\begin{itemize}[nosep]
+    \item user authentication on the remote server;
+    \item viewing file attributes with the ability to show/hide columns (the file name column cannot be hidden);
+    \item viewing the content of specific file types: \texttt{.java} -- as text, \texttt{.png} -- as an image;
+    \item sorting files by the username of the last editor (ascending / descending);
+    \item filtering files: all files / only \texttt{.cs} / only \texttt{.jpg};
+    \item synchronizing the local folder with the remote one based on manifest comparison (\texttt{name, size, mtime, sha256}) and handling editing conflicts.
+\end{itemize}
+
+Architecturally, the system consists of a React client (web), a Swift client (macOS, with full background synchronization via \texttt{FSEvents}), a Go API server (handler / service / repository layers), PostgreSQL for metadata, and an abstract file storage (local disk or S3-compatible storage), deployed on a home Ubuntu server and published via Cloudflare Tunnel.
+
+Based on these requirements, the following sections build a use case diagram as well as architectural and detailed diagrams describing the structure and behavior of the system.
+
+% =====================================================================
+\section{Architectural Design (High Level)}
+% =====================================================================
+
+This stage defines the overall system architecture: who its users are and which scenarios it supports (use case diagram), the general data structure (high-level class diagram), and the physical deployment topology (deployment diagram).
+
+% ---------------------------------------------------------------------
+\subsection{Use Case Diagram}
+% ---------------------------------------------------------------------
+
+The diagram (fig.~\ref{fig:usecase}) shows a single \emph{User} actor who works with the system through a web or desktop client, and the main use cases corresponding to the functional requirements from section~1. Some of the file operations \emph{include} (\texttt{«include»}) the \emph{``Authenticate''} use case, since access to the workspace is only possible after a successful login. Viewing file content is \emph{extended} (\texttt{«extend»}) by two alternative display scenarios (\texttt{.java} / \texttt{.png}), and synchronization is extended by a conflict-resolution scenario that is activated only when discrepancies exist.
+
+\emph{Notation note:} Mermaid has no built-in use case diagram type, so the actor, use cases, and system boundary were built using \texttt{flowchart} (actor -- rounded rectangle, use cases -- ``stadium'' shape, system boundary -- \texttt{subgraph}), with explicit stereotype labels \texttt{«include»}/\texttt{«extend»} on the relations.
+
+\diagram{img/en/01-usecase.pdf}{Use case diagram of the Remote File Folder Client system}{0.95}{fig:usecase}
+
+% ---------------------------------------------------------------------
+\subsection{Class Diagram (General Structure)}
+% ---------------------------------------------------------------------
+
+Fig.~\ref{fig:class-hl} displays the general data structure and the main relationships between the domain classes of the system, without detailing the methods of individual scenarios: the \texttt{User} and \texttt{File} entities, the service layer (\texttt{AuthService}, \texttt{FileService}, \texttt{SyncDiffService}), the data access layer (\texttt{FileRepository}), and the \texttt{FileStorage} abstraction, implemented by local disk storage and S3-compatible storage -- following the ``storage behind an interface'' principle laid out in the requirements (sections 5.2, 5.5).
+
+\diagramland{img/en/02-class-highlevel.pdf}{High-level class diagram (domain model)}{0.98}{fig:class-hl}
+
+% ---------------------------------------------------------------------
+\subsection{Deployment Diagram (General Architecture)}
+% ---------------------------------------------------------------------
+
+Fig.~\ref{fig:deployment} displays the physical topology of the system: client devices (browser, macOS), the Cloudflare edge (TLS termination, public DNS), and a home Ubuntu server that, via Docker Compose, runs three containers -- \texttt{cloudflared} (outbound tunnel without opening ports), \texttt{api} (the Go binary), and \texttt{db} (PostgreSQL) -- together with a persistent \texttt{pgdata} volume and a bind-mounted directory for file storage.
+
+\diagram{img/en/10-deployment.pdf}{Deployment diagram}{0.98}{fig:deployment}
+
+% =====================================================================
+\section{Detailed Design}
+% =====================================================================
+
+Detailed design reveals the internal structure and behavior of individual subsystems: the classes participating in the implementation of a specific use case (VOPC diagram), the interaction of objects over time (sequence diagrams), the behavior of a file depending on its synchronization state (state diagram), the structure of software components (component diagram), and the business-process logic of synchronization (activity diagram).
+
+% ---------------------------------------------------------------------
+\subsection{VOPC Class Diagram for the ``Synchronize local folder with remote'' use case}
+% ---------------------------------------------------------------------
+
+According to the assignment variant, the use case chosen for the VOPC diagram (\emph{View Of Participating Classes}) is \textbf{``Synchronize local folder with remote''} -- the most complex and most thoroughly described scenario in the requirements (section 6 of the requirements). Classes are distributed according to standard analysis stereotypes:
+
+\begin{itemize}[nosep]
+    \item \texttt{«boundary»} -- user interaction elements: the folder watcher (\texttt{FolderWatcherUI}), the manual sync button (\texttt{SyncNowButtonUI}), the conflict resolution dialog (\texttt{ConflictDialogUI});
+    \item \texttt{«control»} -- control logic: \texttt{SyncController} (client), \texttt{SyncDiffService} (server, diff computation), \texttt{ConflictResolver} (applying the user's choice);
+    \item \texttt{«entity»} -- domain data: \texttt{ManifestEntry}, \texttt{SyncCursor}, \texttt{File}, \texttt{ChangeLogEntry}.
+\end{itemize}
+
+\diagramland{img/en/03-class-vopc-sync.pdf}{VOPC class diagram for the ``Synchronize local folder with remote'' use case}{0.98}{fig:vopc}
+
+% ---------------------------------------------------------------------
+\subsection{Interaction Diagrams (Sequence Diagrams)}
+% ---------------------------------------------------------------------
+
+Three sequence diagrams are presented, illustrating key interaction scenarios between the client, the Go API server, and the database.
+
+\subsubsection*{Authentication}
+
+Fig.~\ref{fig:seq-login} shows the sequence of verifying user credentials and issuing a token pair (access/refresh), consistent with the authentication description in the requirements (sections 1, 5.2).
+
+\diagramland{img/en/05-seq-login.pdf}{Sequence diagram: user authentication}{0.95}{fig:seq-login}
+
+\subsubsection*{File Upload}
+
+Fig.~\ref{fig:seq-upload} illustrates the path of a request from the client through the handler layer to the service layer, which first writes the file content to storage (\texttt{FileStorage}), and after the write is confirmed, writes the file metadata to PostgreSQL via \texttt{FileRepository}.
+
+\diagramland{img/en/06-seq-upload.pdf}{Sequence diagram: uploading a file to the server}{0.95}{fig:seq-upload}
+
+\subsubsection*{Synchronization and Conflict Resolution}
+
+Fig.~\ref{fig:seq-sync} details the \texttt{POST /api/sync/diff} protocol (section 6.6 of the requirements): the client sends the local manifest and \texttt{lastSyncedVersion}, the server returns a list of actions for each file, and conflicting files are handled through a request for the user's choice (keep local / keep remote / keep both).
+
+\diagramland{img/en/07-seq-sync.pdf}{Sequence diagram: synchronization and conflict resolution}{0.98}{fig:seq-sync}
+
+% ---------------------------------------------------------------------
+\subsection{State Diagram}
+% ---------------------------------------------------------------------
+
+Fig.~\ref{fig:state} describes the behavior of the \emph{File} entity depending on its synchronization state: from local/remote creation, through transfer (\texttt{Uploading}/\texttt{Downloading}), to the synchronized state, possible local or remote changes, and, in case of a simultaneous change on both sides, a conflict resolved by the user. The diagram directly implements the four manifest-comparison cases from section 6.2 of the requirements (upload / download / no-op / conflict) together with handling deletions via the version cursor (section 6.3).
+
+\diagramland{img/en/08-state-file.pdf}{State diagram of a file during synchronization}{0.85}{fig:state}
+
+% ---------------------------------------------------------------------
+\subsection{Component Diagram}
+% ---------------------------------------------------------------------
+
+Fig.~\ref{fig:component} details the software components of the system and their dependencies: the client applications, the \texttt{cloudflared} tunnel, and, inside the Go API server, the \texttt{Handler} $\to$ \texttt{Service} $\to$ \texttt{Repository} layers, together with the implementation-independent \texttt{FileStorage} interface, which allows swapping local storage for S3-compatible storage without changing the business logic (sections 5.2, 5.5 of the requirements).
+
+\diagram{img/en/09-component.pdf}{Component diagram of the system}{0.9}{fig:component}
+
+% ---------------------------------------------------------------------
+\subsection{Activity Diagram}
+% ---------------------------------------------------------------------
+
+Fig.~\ref{fig:activity} details the business logic of a single synchronization cycle: computing the local manifest, sending it to the server, determining the action for each file (upload/download/no-op/conflict/delete\_local), executing the action or, in the event of a conflict, obtaining the user's decision (keep local / keep remote / keep both), and finally saving the new sync cursor version (section 6 of the requirements).
+
+\diagram{img/en/04-activity-sync.pdf}{Activity diagram: synchronization cycle}{0.98}{fig:activity}
+
+% =====================================================================
+\section{Conclusions}
+% =====================================================================
+
+The developed set of diagrams consistently reveals the Remote File Folder Client system from business requirements to detailed structure and behavior: the use case diagram captures the user's functional scenarios; the general class diagram and the deployment diagram define the architectural framework; the VOPC diagram, along with the sequence, state, component, and activity diagrams, detail the implementation of the most complex scenario -- synchronizing files between the local and remote folder, including the manifest-comparison protocol and editing-conflict resolution. The constructed diagrams are mutually consistent (shared classes, entities, and actions) and serve as a foundation for the further development and testing of the system.
+
+\end{document}

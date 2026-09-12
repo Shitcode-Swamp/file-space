@@ -1,0 +1,72 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+classDiagram
+    class FolderWatcherUI {
+        <<boundary>>
+        +onLocalChangeDetected()
+    }
+
+    class SyncNowButtonUI {
+        <<boundary>>
+    }
+
+    class ConflictDialogUI {
+        <<boundary>>
+        +askUserResolution(file) Resolution
+    }
+
+    class SyncController {
+        <<control>>
+        +runSyncCycle()
+        +buildLocalManifest() ManifestEntry[]
+    }
+
+    class SyncDiffService {
+        <<control>>
+        +computeDiff(manifest, lastSyncedVersion) SyncResult
+    }
+
+    class ConflictResolver {
+        <<control>>
+        +resolve(file, resolution)
+    }
+
+    class ManifestEntry {
+        <<entity>>
+        +string name
+        +int size
+        +datetime mtime
+        +string sha256
+    }
+
+    class SyncCursor {
+        <<entity>>
+        +int lastSyncedVersion
+    }
+
+    class File {
+        <<entity>>
+        +UUID id
+        +string name
+        +string sha256
+        +int version
+    }
+
+    class ChangeLogEntry {
+        <<entity>>
+        +UUID fileId
+        +string changeType
+        +int version
+    }
+
+    FolderWatcherUI --> SyncController : подія FSEvents
+    SyncNowButtonUI --> SyncController : ручний запуск
+    SyncController --> ManifestEntry : формує
+    SyncController --> SyncCursor : читає lastSyncedVersion
+    SyncController --> SyncDiffService : POST /api/sync/diff
+    SyncDiffService --> File : порівнює з
+    SyncDiffService --> ChangeLogEntry : читає зміни з
+    SyncDiffService --> ManifestEntry : отримує від клієнта
+    SyncController --> ConflictResolver : дія = conflict
+    ConflictResolver --> ConflictDialogUI : показує вибір
+    ConflictResolver --> File : keep local / remote / both
+    SyncController --> SyncCursor : оновлює newVersion

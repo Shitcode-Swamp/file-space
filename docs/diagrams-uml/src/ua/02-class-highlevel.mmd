@@ -1,0 +1,92 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+classDiagram
+    class User {
+        +UUID id
+        +string email
+        +string passwordHash
+        +datetime createdAt
+        +authenticate(password) bool
+    }
+
+    class Session {
+        +string accessToken
+        +string refreshToken
+        +datetime expiresAt
+        +isValid() bool
+    }
+
+    class File {
+        +UUID id
+        +string name
+        +int size
+        +datetime createdAt
+        +datetime modifiedAt
+        +string sha256
+        +int version
+        +getExtension() string
+    }
+
+    class FileService {
+        +listFiles(sort, filter) File[]
+        +upload(file) File
+        +download(id) Reader
+        +delete(id) void
+    }
+
+    class FileRepository {
+        +findAll(sort, filter) File[]
+        +findById(id) File
+        +save(file) File
+        +delete(id) void
+    }
+
+    class FileStorage {
+        <<interface>>
+        +Save(key, reader) error
+        +Open(key) ReadCloser
+        +Delete(key) error
+    }
+
+    class LocalFileStorage {
+        +basePath string
+    }
+
+    class S3Storage {
+        +bucket string
+        +endpoint string
+    }
+
+    class AuthService {
+        +login(email, password) Session
+        +register(email, password) User
+        +refresh(token) Session
+    }
+
+    class SyncDiffService {
+        +computeDiff(manifest, lastSyncedVersion) SyncResult
+    }
+
+    class ManifestEntry {
+        +string name
+        +int size
+        +datetime mtime
+        +string sha256
+    }
+
+    class ChangeLogEntry {
+        +UUID fileId
+        +string changeType
+        +int version
+    }
+
+    User "1" --> "0..*" File : uploadedBy / editedBy
+    User "1" --> "0..*" Session : has
+    FileService --> FileRepository : uses
+    FileService --> FileStorage : uses
+    AuthService --> User : manages
+    LocalFileStorage ..|> FileStorage : implements
+    S3Storage ..|> FileStorage : implements
+    SyncDiffService --> FileRepository : uses
+    SyncDiffService --> ChangeLogEntry : reads
+    SyncDiffService --> ManifestEntry : compares
+    FileRepository --> File : persists

@@ -1,0 +1,33 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+sequenceDiagram
+    actor U as User
+    participant W as FSEvents<br/>(watcher, Swift)
+    participant SC as SyncController<br/>(Swift client)
+    participant H as SyncHandler<br/>(Go API)
+    participant SS as SyncDiffService
+    participant REP as FileRepository
+    participant DB as PostgreSQL
+
+    W->>SC: local folder change event
+    SC->>SC: compute manifest<br/>{name, size, mtime, sha256}
+    SC->>H: POST /api/sync/diff<br/>{manifest, lastSyncedVersion}
+    H->>SS: computeDiff(manifest, lastSyncedVersion)
+    SS->>REP: findChangedSince(lastSyncedVersion)
+    REP->>DB: SELECT files, change_log
+    DB-->>REP: rows
+    REP-->>SS: list of files and versions
+    SS->>SS: compare hash/versions,<br/>determine action for file
+    SS-->>H: { newVersion, actions[] }
+    H-->>SC: 200 OK { newVersion, actions[] }
+
+    loop for each action
+        alt action == upload/download/delete_local/noop
+            SC->>SC: execute action locally
+        else action == conflict
+            SC->>U: show conflict dialog
+            U-->>SC: Keep local / Keep remote / Keep both
+            SC->>SC: apply user's choice
+        end
+    end
+
+    SC->>SC: save newVersion as lastSyncedVersion

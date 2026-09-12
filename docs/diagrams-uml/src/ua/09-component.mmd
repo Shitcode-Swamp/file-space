@@ -1,0 +1,29 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}, 'flowchart': {'subGraphTitleMargin': {'top': 10, 'bottom': 15}}}}%%
+flowchart TB
+    WebC["«component»<br/>React Web Client"]
+    SwiftC["«component»<br/>Swift Desktop Client"]
+
+    subgraph EDGE["Ubuntu Home Server"]
+        direction TB
+        CFT["«component»<br/>cloudflared<br/>(Cloudflare Tunnel)"]
+
+        subgraph API["«component» Go API Server"]
+            direction TB
+            Handler["«component»<br/>Handler layer<br/>(chi router)"]
+            Service["«component»<br/>Service layer<br/>(бізнес-логіка)"]
+            Repo["«component»<br/>Repository layer<br/>(sqlc/sqlx)"]
+            IFileStorage(["FileStorage<br/>interface"])
+            Handler --> Service
+            Service --> Repo
+            Service --> IFileStorage
+        end
+
+        PG[("«component»<br/>PostgreSQL<br/>users, files, change_log")]
+        Storage[("«component»<br/>File Storage<br/>(local disk / S3-compatible)")]
+    end
+
+    WebC -- "HTTPS / JSON REST" --> CFT
+    SwiftC -- "HTTPS / JSON REST" --> CFT
+    CFT --> Handler
+    Repo -- "SQL" --> PG
+    Storage -. "реалізує" .-> IFileStorage

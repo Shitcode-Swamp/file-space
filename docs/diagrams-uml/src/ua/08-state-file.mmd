@@ -1,0 +1,24 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+stateDiagram-v2
+    [*] --> LocalOnly : файл створено локально
+    [*] --> NotDownloaded : файл вивантажено<br/>з іншого клієнта
+
+    LocalOnly --> Uploading : розпочато вивантаження
+    Uploading --> Synced : вивантаження успішне
+
+    NotDownloaded --> Downloading : розпочато завантаження
+    Downloading --> Synced : завантаження успішне
+
+    Synced --> ModifiedLocally : FSEvents: локальна зміна
+    Synced --> ModifiedRemotely : diff: версія на сервері зросла
+
+    ModifiedLocally --> Uploading : наступна синхронізація<br/>(віддалена версія не змінювалась)
+    ModifiedRemotely --> Downloading : наступна синхронізація<br/>(локальна версія не змінювалась)
+
+    ModifiedLocally --> Conflict : обидві сторони<br/>змінились одночасно
+    ModifiedRemotely --> Conflict : обидві сторони<br/>змінились одночасно
+
+    Conflict --> Synced : користувач обрав<br/>keep local / remote / both
+
+    Synced --> Deleted : видалення файлу
+    Deleted --> [*]

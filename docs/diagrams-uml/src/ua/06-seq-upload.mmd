@@ -1,0 +1,22 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+sequenceDiagram
+    actor U as Користувач
+    participant C as Клієнт<br/>(React / Swift)
+    participant H as FileHandler<br/>(Go API)
+    participant FS as FileService
+    participant ST as FileStorage
+    participant REP as FileRepository
+    participant DB as PostgreSQL
+
+    U->>C: Обрати файл і натиснути «Вивантажити»
+    C->>H: POST /api/files (multipart)
+    H->>FS: upload(fileStream, meta)
+    FS->>ST: Save(key, reader)
+    ST-->>FS: OK
+    FS->>REP: save(File{name, size, sha256, uploadedBy})
+    REP->>DB: INSERT INTO files (...)
+    DB-->>REP: file id
+    REP-->>FS: File
+    FS-->>H: File
+    H-->>C: 201 Created { file }
+    C-->>U: Показати новий файл у таблиці

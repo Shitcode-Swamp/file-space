@@ -1,0 +1,24 @@
+%%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
+stateDiagram-v2
+    [*] --> LocalOnly : file created locally
+    [*] --> NotDownloaded : file uploaded<br/>from another client
+
+    LocalOnly --> Uploading : upload started
+    Uploading --> Synced : upload succeeded
+
+    NotDownloaded --> Downloading : download started
+    Downloading --> Synced : download succeeded
+
+    Synced --> ModifiedLocally : FSEvents: local change
+    Synced --> ModifiedRemotely : diff: server version increased
+
+    ModifiedLocally --> Uploading : next sync<br/>(remote version unchanged)
+    ModifiedRemotely --> Downloading : next sync<br/>(local version unchanged)
+
+    ModifiedLocally --> Conflict : both sides<br/>changed simultaneously
+    ModifiedRemotely --> Conflict : both sides<br/>changed simultaneously
+
+    Conflict --> Synced : user chose<br/>keep local / remote / both
+
+    Synced --> Deleted : file deletion
+    Deleted --> [*]
