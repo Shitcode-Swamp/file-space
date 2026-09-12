@@ -1,0 +1,33 @@
+# Example Cloudflare Tunnel ingress configuration.
+#
+# This file is a TEMPLATE. Copy it to `config.yml` (gitignored — it will
+# contain your real tunnel ID/credentials-file path and hostname) and fill
+# in the placeholders below:
+#
+#   1. Run `cloudflared tunnel create filespace` once. This prints a tunnel
+#      ID and writes a credentials JSON file (also gitignored, see
+#      deploy/cloudflared/*.json in .gitignore).
+#   2. Replace TUNNEL_ID below with that tunnel's ID (or its name).
+#   3. Point `credentials-file` at the JSON file cloudflared wrote for you.
+#   4. Replace `drive.example.com` with the real public hostname you want to
+#      expose (e.g. `drive.yourdomain.com`), and create the matching DNS
+#      record with `cloudflared tunnel route dns filespace drive.yourdomain.com`.
+#   5. `service: http://api:8080` assumes the Go API container is named
+#      `api` and listens on port 8080 inside the docker-compose network
+#      (see ../docker-compose.yml) — adjust the port if your API differs.
+#
+# Note: when running cloudflared via docker-compose with TUNNEL_TOKEN (the
+# token-based "remote-managed" tunnel), this ingress config is instead
+# managed from the Cloudflare Zero Trust dashboard. Keep this file as the
+# local/self-managed alternative, or as documentation of the ingress rules
+# mirrored in the dashboard.
+
+tunnel: TUNNEL_ID
+credentials-file: /etc/cloudflared/TUNNEL_ID.json
+
+ingress:
+  # Public hostname -> internal service.
+  - hostname: drive.example.com
+    service: http://api:8080
+  # Catch-all rule is required and must be last.
+  - service: http_status:404

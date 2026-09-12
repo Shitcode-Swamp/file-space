@@ -1,0 +1,47 @@
+# Docker Compose stack for the file-space home-server deployment.
+# See REQUIREMENTS.md §5.5 "Data storage on the home server" and
+# §5.6 "Deployment: Ubuntu + Docker Compose + cloudflared".
+#
+# Usage:
+#   cp ../.env.example ../.env   # then fill in real secrets
+#   docker compose --env-file ../.env up -d --build
+#
+# Secrets (DATABASE_URL, JWT_SECRET, POSTGRES_PASSWORD, TUNNEL_TOKEN) are
+# never hardcoded here — they come from the environment / .env file.
+
+services:
+  api:
+    build: ../backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - STORAGE_DIR=${STORAGE_DIR:-/data/storage}
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - ../storage:${STORAGE_DIR:-/data/storage}
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-filespace}
+      - POSTGRES_USER=${POSTGRES_USER:-filespace}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

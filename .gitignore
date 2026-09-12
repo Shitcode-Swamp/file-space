@@ -1,0 +1,50 @@
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+deploy/cloudflared/*.json
+deploy/cloudflared/config.yml
+
+# --- Go (backend/) ---
+backend/bin/
+backend/*.exe
+backend/*.test
+backend/*.out
+backend/vendor/
+
+# --- Node / React (frontend/) ---
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/*.local
+npm-debug.log*
+yarn-error.log*
+
+# --- Swift / Xcode (desktop/) ---
+desktop/.build/
+desktop/DerivedData/
+desktop/*.xcodeproj/xcuserdata/
+desktop/*.xcworkspace/xcuserdata/
+desktop/*.xcworkspace/xcshareddata/
+desktop/*.xcuserstate
+desktop/.swiftpm/
+
+# --- Local file storage / runtime data ---
+storage/
+deploy/storage/
+pgdata/
+*.db
+*.sqlite
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
