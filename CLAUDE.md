@@ -23,4 +23,6 @@ migrations/ golang-migrate SQL files
 
 ## Commands
 
-_To be filled in once each subproject is scaffolded (e.g. `go test ./...`, `npm run dev`, `npm run lint`, Xcode build/test commands)._
+- **Backend** (from `backend/`): `go build ./...`, `go vet ./...`, `go test ./...`.
+- **Frontend** (from `frontend/`): `npm run dev`, `npm run build`, `npm run lint`.
+- **Desktop**: _to be filled in once the Xcode project is scaffolded._

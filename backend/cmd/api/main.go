@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 
 	"filespace/backend/internal/config"
 	"filespace/backend/internal/db"
@@ -48,7 +49,7 @@ func main() {
 	syncSvc := service.NewSyncService(fileRepo)
 
 	authHandler := handler.NewAuthHandler(authSvc)
-	fileHandler := handler.NewFileHandler(fileSvc)
+	fileHandler := handler.NewFileHandler(fileSvc, userRepo)
 	syncHandler := handler.NewSyncHandler(syncSvc)
 
 	r := chi.NewRouter()
@@ -58,6 +59,12 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{cfg.CORSAllowedOrigin},
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: false,
+	}))
 
 	r.Get("/healthz", handleHealthz)
 

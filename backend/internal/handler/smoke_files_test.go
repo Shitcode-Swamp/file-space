@@ -83,7 +83,7 @@ func TestSmokeFileHTTPRoundTrip(t *testing.T) {
 	}
 
 	svc := service.NewFileService(repo.NewPostgresFileRepo(sqlxDB), store)
-	fh := NewFileHandler(svc)
+	fh := NewFileHandler(svc, users)
 
 	r := chi.NewRouter()
 	r.With(fakeAuth(owner.ID)).Route("/api/files", fh.Routes)
@@ -111,7 +111,7 @@ func TestSmokeFileHTTPRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &csResp); err != nil {
 		t.Fatalf("decode upload response: %v", err)
 	}
-	if csResp.Extension != "cs" || csResp.Size != int64(len(csContent)) || csResp.UploadedBy != owner.ID || csResp.EditedBy != owner.ID {
+	if csResp.Extension != "cs" || csResp.Size != int64(len(csContent)) || csResp.UploadedBy != owner.Username || csResp.EditedBy != owner.Username {
 		t.Fatalf("unexpected upload response: %+v", csResp)
 	}
 

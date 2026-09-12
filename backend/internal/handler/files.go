@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -33,12 +34,14 @@ const maxUploadSize = 512 << 20 // 512 MiB
 // Integration stage mounts in front of these routes); if it isn't present,
 // handlers respond 401 rather than assuming an anonymous caller.
 type FileHandler struct {
-	svc *service.FileService
+	svc   *service.FileService
+	users repo.UserRepo
 }
 
-// NewFileHandler constructs a FileHandler backed by svc.
-func NewFileHandler(svc *service.FileService) *FileHandler {
-	return &FileHandler{svc: svc}
+// NewFileHandler constructs a FileHandler backed by svc, resolving
+// uploadedBy/editedBy ids to usernames via users.
+func NewFileHandler(svc *service.FileService, users repo.UserRepo) *FileHandler {
+	return &FileHandler{svc: svc, users: users}
 }
 
 // Routes registers the file endpoints onto r, so the Integration stage can
@@ -55,13 +58,9 @@ func (h *FileHandler) Routes(r chi.Router) {
 }
 
 // fileResponse is the JSON shape returned for a single file's metadata.
-//
-// uploadedBy/editedBy are returned as numeric user ids, not usernames: doing
-// the id -> username resolution here would require this handler (or
-// FileService) to also depend on UserRepo, which neither of their contracted
-// constructors accept. Left as a follow-up for the Integration stage, which
-// is free to either widen NewFileHandler/NewFileService to take a UserRepo,
-// or resolve ids to usernames in a thin wrapper at the mount site.
+// uploadedBy/editedBy are the *usernames* of the users who uploaded/last
+// edited the file, resolved from the domain.File's numeric ids via
+// FileHandler.users.
 type fileResponse struct {
 	ID         int64     `json:"id"`
 	Name       string    `json:"name"`
@@ -69,11 +68,11 @@ type fileResponse struct {
 	Size       int64     `json:"size"`
 	CreatedAt  time.Time `json:"createdAt"`
 	ModifiedAt time.Time `json:"modifiedAt"`
-	UploadedBy int64     `json:"uploadedBy"`
-	EditedBy   int64     `json:"editedBy"`
+	UploadedBy string    `json:"uploadedBy"`
+	EditedBy   string    `json:"editedBy"`
 }
 
-func toFileResponse(f domain.File) fileResponse {
+func toFileResponse(f domain.File, uploadedBy, editedBy string) fileResponse {
 	return fileResponse{
 		ID:         f.ID,
 		Name:       f.Name,
@@ -81,9 +80,50 @@ func toFileResponse(f domain.File) fileResponse {
 		Size:       f.Size,
 		CreatedAt:  f.CreatedAt,
 		ModifiedAt: f.ModifiedAt,
-		UploadedBy: f.UploadedBy,
-		EditedBy:   f.EditedBy,
+		UploadedBy: uploadedBy,
+		EditedBy:   editedBy,
 	}
+}
+
+// usernameResolver resolves user ids to usernames, caching lookups so a
+// given id is only fetched from h.users once per request.
+type usernameResolver struct {
+	users repo.UserRepo
+	cache map[int64]string
+}
+
+func (h *FileHandler) newUsernameResolver() *usernameResolver {
+	return &usernameResolver{users: h.users, cache: make(map[int64]string)}
+}
+
+// resolve returns the username for id, fetching it via UserRepo.GetByID and
+// caching the result if it isn't already cached. A file referencing a
+// nonexistent user id is a data integrity bug, so lookup failures are
+// propagated as errors rather than papered over.
+func (r *usernameResolver) resolve(ctx context.Context, id int64) (string, error) {
+	if name, ok := r.cache[id]; ok {
+		return name, nil
+	}
+	u, err := r.users.GetByID(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("handler: resolve username for user id=%d: %w", id, err)
+	}
+	r.cache[id] = u.Username
+	return u.Username, nil
+}
+
+// toResponse resolves f's uploadedBy/editedBy ids to usernames and builds
+// its fileResponse.
+func (r *usernameResolver) toResponse(ctx context.Context, f domain.File) (fileResponse, error) {
+	uploadedBy, err := r.resolve(ctx, f.UploadedBy)
+	if err != nil {
+		return fileResponse{}, err
+	}
+	editedBy, err := r.resolve(ctx, f.EditedBy)
+	if err != nil {
+		return fileResponse{}, err
+	}
+	return toFileResponse(f, uploadedBy, editedBy), nil
 }
 
 // requireUserID reads the authenticated caller's id from the request
@@ -129,9 +169,16 @@ func (h *FileHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resolver := h.newUsernameResolver()
 	resp := make([]fileResponse, 0, len(files))
 	for _, f := range files {
-		resp = append(resp, toFileResponse(f))
+		fr, err := resolver.toResponse(r.Context(), f)
+		if err != nil {
+			log.Printf("handler: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+		resp = append(resp, fr)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -157,7 +204,14 @@ func (h *FileHandler) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	writeJSON(w, http.StatusOK, toFileResponse(f))
+
+	fr, err := h.newUsernameResolver().toResponse(r.Context(), f)
+	if err != nil {
+		log.Printf("handler: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusOK, fr)
 }
 
 // content handles GET /api/files/{id}/content — inline preview, restricted
@@ -269,7 +323,13 @@ func (h *FileHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, toFileResponse(created))
+	fr, err := h.newUsernameResolver().toResponse(r.Context(), created)
+	if err != nil {
+		log.Printf("handler: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, fr)
 }
 
 // delete handles DELETE /api/files/{id}
