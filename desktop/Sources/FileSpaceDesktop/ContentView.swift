@@ -1,9 +1,13 @@
 import SwiftUI
 
 struct ContentView: View {
+    @EnvironmentObject private var appState: AppState
+
     var body: some View {
-        Text("FileSpace Desktop — coming soon")
-            .padding()
-            .frame(minWidth: 400, minHeight: 300)
+        if appState.isAuthenticated {
+            MainView(appState: appState)
+        } else {
+            LoginView()
+        }
     }
 }
