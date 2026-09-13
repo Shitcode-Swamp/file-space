@@ -33,7 +33,7 @@ desktop/*.xcuserstate
 desktop/.swiftpm/
 
 # --- Local file storage / runtime data ---
-storage/
+/storage/
 deploy/storage/
 pgdata/
 *.db
