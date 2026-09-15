@@ -277,7 +277,7 @@ func TestUpload_SQLInjectionShapedFilenames(t *testing.T) {
 			if !bytes.Equal(downloadRec.Body.Bytes(), tc.content) {
 				t.Fatalf("downloaded content = %q, want %q", downloadRec.Body.Bytes(), tc.content)
 			}
-			wantDisposition := fmt.Sprintf("attachment; filename=%q", tc.filename)
+			wantDisposition := contentDispositionAttachment(tc.filename)
 			if got := downloadRec.Header().Get("Content-Disposition"); got != wantDisposition {
 				t.Fatalf("Content-Disposition = %q, want %q", got, wantDisposition)
 			}

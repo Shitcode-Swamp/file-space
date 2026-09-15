@@ -2,14 +2,17 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -55,6 +58,16 @@ func (h *FileHandler) Routes(r chi.Router) {
 	r.Get("/{id}/content", h.content)
 	r.Get("/{id}/download", h.download)
 	r.Delete("/{id}", h.delete)
+
+	// Chunked upload session, for large files and upload progress — see
+	// service/uploads.go. "uploads" is a static segment, so chi matches it
+	// ahead of the "/{id}" param routes above rather than colliding with them.
+	r.Route("/uploads", func(ur chi.Router) {
+		ur.Post("/", h.initiateUpload)
+		ur.Put("/{uploadID}/chunks/{index}", h.uploadChunk)
+		ur.Post("/{uploadID}/complete", h.completeUpload)
+		ur.Delete("/{uploadID}", h.abortUpload)
+	})
 }
 
 // fileResponse is the JSON shape returned for a single file's metadata.
@@ -141,7 +154,31 @@ func parseFileID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 }
 
-// list handles GET /api/files?sort=editedBy&order=asc|desc&extension=cs
+// listSortFields maps the "sort" query param to a repo.SortField. An
+// unrecognized or missing value defaults to repo.SortByName (the zero
+// value), matching the web client's default sort.
+var listSortFields = map[string]repo.SortField{
+	"name":       repo.SortByName,
+	"createdAt":  repo.SortByCreatedAt,
+	"modifiedAt": repo.SortByModifiedAt,
+	"uploadedBy": repo.SortByUploadedBy,
+	"editedBy":   repo.SortByEditedBy,
+}
+
+// defaultListLimit/maxListLimit bound the "limit" query param: callers that
+// don't specify one get defaultListLimit files per page (the web client's
+// infinite scroll), and no caller can request more than maxListLimit at
+// once — the desktop client, which wants everything in a single call,
+// requests exactly maxListLimit (see APIClient.swift).
+const (
+	defaultListLimit = 50
+	maxListLimit     = 1000
+)
+
+// list handles GET /api/files?sort=name|createdAt|modifiedAt|uploadedBy|editedBy
+// &order=asc|desc&extension=cs&limit=50&offset=0. The response is a bare
+// JSON array of files (unchanged shape) plus an X-Has-More: true|false
+// header reporting whether more files exist beyond this page.
 func (h *FileHandler) list(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -149,21 +186,32 @@ func (h *FileHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	params := repo.ListParams{UploadedBy: userID}
+	params := repo.ListParams{UploadedBy: userID, Limit: defaultListLimit}
 
-	if sort := q.Get("sort"); sort == "editedBy" {
-		order := strings.ToLower(strings.TrimSpace(q.Get("order")))
-		if order != "desc" {
-			order = "asc"
-		}
-		params.SortEditedByOrder = order
+	params.SortField = listSortFields[q.Get("sort")]
+
+	if strings.ToLower(strings.TrimSpace(q.Get("order"))) == "desc" {
+		params.SortOrder = "desc"
+	} else {
+		params.SortOrder = "asc"
 	}
 
 	if ext := strings.TrimPrefix(strings.TrimSpace(q.Get("extension")), "."); ext != "" {
 		params.Extension = ext
 	}
 
-	files, err := h.svc.List(r.Context(), params)
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		params.Limit = n
+	}
+	if params.Limit > maxListLimit {
+		params.Limit = maxListLimit
+	}
+
+	if n, err := strconv.Atoi(q.Get("offset")); err == nil && n >= 0 {
+		params.Offset = n
+	}
+
+	files, hasMore, err := h.svc.List(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
@@ -180,6 +228,7 @@ func (h *FileHandler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		resp = append(resp, fr)
 	}
+	w.Header().Set("X-Has-More", strconv.FormatBool(hasMore))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -248,6 +297,43 @@ func (h *FileHandler) content(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// contentDispositionAttachment builds a Content-Disposition header value
+// that survives non-ASCII filenames. Browsers' fetch() decodes response
+// header bytes as Latin-1, so raw UTF-8 bytes in a plain filename="..."
+// parameter come back mangled once read via Headers.get(). The RFC 6266
+// filename* parameter percent-encodes the UTF-8 bytes (pure ASCII on the
+// wire) and is what the frontend's client.ts prefers; filename="..." is
+// kept as an ASCII-safe fallback for clients that ignore filename*.
+func contentDispositionAttachment(name string) string {
+	fallback := name
+	if !isASCII(name) {
+		fallback = asciiFallback(name)
+	}
+	encoded := strings.ReplaceAll(url.QueryEscape(name), "+", "%20")
+	return fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", fallback, encoded)
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiFallback(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r <= unicode.MaxASCII {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 // download handles GET /api/files/{id}/download — works for every
 // extension, unlike content preview.
 func (h *FileHandler) download(w http.ResponseWriter, r *http.Request) {
@@ -273,7 +359,7 @@ func (h *FileHandler) download(w http.ResponseWriter, r *http.Request) {
 	defer rc.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", f.Name))
+	w.Header().Set("Content-Disposition", contentDispositionAttachment(f.Name))
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, rc); err != nil {
 		log.Printf("handler: stream download for file id=%d: %v", id, err)
@@ -330,6 +416,138 @@ func (h *FileHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, fr)
+}
+
+// maxChunkBodySize bounds a single PUT .../chunks/{index} request body.
+// It's generously above service.UploadChunkSize (what clients are told to
+// send) so a well-behaved client is never rejected; it exists only to stop
+// a misbehaving one from streaming an unbounded body into a single chunk.
+const maxChunkBodySize = 2 * service.UploadChunkSize
+
+type initiateUploadRequest struct {
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+}
+
+type initiateUploadResponse struct {
+	UploadID  string `json:"uploadId"`
+	ChunkSize int64  `json:"chunkSize"`
+}
+
+// initiateUpload handles POST /api/files/uploads — starts a chunked-upload
+// session for a file of the declared name/size, returning the session id
+// and the chunk size the client must upload in.
+func (h *FileHandler) initiateUpload(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+
+	var req initiateUploadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	uploadID, chunkSize, err := h.svc.InitiateUpload(r.Context(), userID, req.Filename, req.Size)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrInvalidFilename):
+			writeError(w, http.StatusBadRequest, "invalid filename")
+		case errors.Is(err, service.ErrUploadTooLarge):
+			writeError(w, http.StatusRequestEntityTooLarge, "file too large")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, initiateUploadResponse{UploadID: uploadID, ChunkSize: chunkSize})
+}
+
+// uploadChunk handles PUT /api/files/uploads/{uploadID}/chunks/{index} — the
+// request body is the chunk's raw bytes. Chunks must arrive in order
+// starting at index 0.
+func (h *FileHandler) uploadChunk(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	uploadID := chi.URLParam(r, "uploadID")
+	index, err := strconv.Atoi(chi.URLParam(r, "index"))
+	if err != nil || index < 0 {
+		writeError(w, http.StatusBadRequest, "invalid chunk index")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxChunkBodySize)
+	if err := h.svc.UploadChunk(r.Context(), userID, uploadID, index, r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxBytesErr):
+			writeError(w, http.StatusRequestEntityTooLarge, "chunk too large")
+		case errors.Is(err, service.ErrUploadSessionNotFound):
+			writeError(w, http.StatusNotFound, "upload session not found")
+		case errors.Is(err, service.ErrUploadChunkOutOfOrder):
+			writeError(w, http.StatusConflict, "chunk out of order")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// completeUpload handles POST /api/files/uploads/{uploadID}/complete —
+// finalizes the session into a stored file once every chunk has arrived,
+// responding with the same shape as the single-shot upload endpoint.
+func (h *FileHandler) completeUpload(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	uploadID := chi.URLParam(r, "uploadID")
+
+	created, err := h.svc.CompleteUpload(r.Context(), userID, uploadID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrUploadSessionNotFound):
+			writeError(w, http.StatusNotFound, "upload session not found")
+		case errors.Is(err, service.ErrUploadSizeMismatch):
+			writeError(w, http.StatusBadRequest, "uploaded bytes do not match declared size")
+		case errors.Is(err, service.ErrInvalidFilename):
+			writeError(w, http.StatusBadRequest, "invalid filename")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	fr, err := h.newUsernameResolver().toResponse(r.Context(), created)
+	if err != nil {
+		log.Printf("handler: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, fr)
+}
+
+// abortUpload handles DELETE /api/files/uploads/{uploadID} — discards an
+// in-progress upload session (e.g. the user cancels).
+func (h *FileHandler) abortUpload(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	uploadID := chi.URLParam(r, "uploadID")
+	if err := h.svc.AbortUpload(r.Context(), userID, uploadID); err != nil {
+		if errors.Is(err, service.ErrUploadSessionNotFound) {
+			writeError(w, http.StatusNotFound, "upload session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // delete handles DELETE /api/files/{id}

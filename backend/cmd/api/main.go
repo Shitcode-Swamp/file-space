@@ -60,9 +60,14 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{cfg.CORSAllowedOrigin},
-		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
-		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowedOrigins: []string{cfg.CORSAllowedOrigin},
+		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowedHeaders: []string{"Authorization", "Content-Type"},
+		// Without this, browsers strip these from cross-origin fetch()
+		// responses: Content-Disposition carries the real download filename
+		// (GET /api/files/{id}/download), X-Has-More tells the frontend
+		// whether GET /api/files has another page to fetch.
+		ExposedHeaders:   []string{"Content-Disposition", "X-Has-More"},
 		AllowCredentials: false,
 	}))
 

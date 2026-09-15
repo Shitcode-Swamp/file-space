@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
@@ -70,14 +71,30 @@ func (r deletionRow) toDomain() domain.Deletion {
 	}
 }
 
-// List returns files owned by params.UploadedBy, optionally filtered by
-// extension and ordered by the *name* of the user who last edited the
-// file.
-func (r *PostgresFileRepo) List(ctx context.Context, params ListParams) ([]domain.File, error) {
+// sortExprs maps each SortField to the SQL expression it orders by. Both
+// "uploader" and "editor" are always joined in below regardless of which
+// field is active, since the set of possible sort fields is small and
+// fixed and it keeps the query construction simple.
+var sortExprs = map[SortField]string{
+	SortByName:       "f.name",
+	SortByCreatedAt:  "f.created_at",
+	SortByModifiedAt: "f.modified_at",
+	SortByUploadedBy: "uploader.username",
+	SortByEditedBy:   "editor.username",
+}
+
+// List returns one page of files owned by params.UploadedBy, optionally
+// filtered by extension and ordered by params.SortField/SortOrder (ties
+// always break on f.id ascending, so pagination across calls is stable).
+// When params.Limit is 0, every matching file is returned and hasMore is
+// always false; otherwise at most params.Limit files are returned and
+// hasMore reports whether more exist beyond this page.
+func (r *PostgresFileRepo) List(ctx context.Context, params ListParams) ([]domain.File, bool, error) {
 	query := `
 		SELECT f.id, f.name, f.storage_key, f.size, f.extension,
 		       f.created_at, f.modified_at, f.uploaded_by, f.edited_by, f.version
 		FROM files f
+		JOIN users uploader ON uploader.id = f.uploaded_by
 		JOIN users editor ON editor.id = f.edited_by
 		WHERE f.uploaded_by = $1`
 	args := []any{params.UploadedBy}
@@ -87,25 +104,38 @@ func (r *PostgresFileRepo) List(ctx context.Context, params ListParams) ([]domai
 		query += fmt.Sprintf(" AND f.extension = $%d", len(args))
 	}
 
-	switch params.SortEditedByOrder {
-	case "asc":
-		query += " ORDER BY editor.username ASC, f.id ASC"
-	case "desc":
-		query += " ORDER BY editor.username DESC, f.id ASC"
-	default:
-		query += " ORDER BY f.id ASC"
+	sortExpr, ok := sortExprs[params.SortField]
+	if !ok {
+		sortExpr = sortExprs[SortByName]
+	}
+	dir := "ASC"
+	if strings.EqualFold(params.SortOrder, "desc") {
+		dir = "DESC"
+	}
+	query += fmt.Sprintf(" ORDER BY %s %s, f.id ASC", sortExpr, dir)
+
+	// Fetch one row beyond the page so hasMore can be derived without a
+	// separate COUNT(*) query.
+	if params.Limit > 0 {
+		args = append(args, params.Limit+1, params.Offset)
+		query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", len(args)-1, len(args))
 	}
 
 	var rows []fileRow
 	if err := r.db.SelectContext(ctx, &rows, query, args...); err != nil {
-		return nil, fmt.Errorf("repo: list files: %w", err)
+		return nil, false, fmt.Errorf("repo: list files: %w", err)
+	}
+
+	hasMore := params.Limit > 0 && len(rows) > params.Limit
+	if hasMore {
+		rows = rows[:params.Limit]
 	}
 
 	files := make([]domain.File, 0, len(rows))
 	for _, row := range rows {
 		files = append(files, row.toDomain())
 	}
-	return files, nil
+	return files, hasMore, nil
 }
 
 // GetByID returns the file with the given id, scoped to uploadedBy so a

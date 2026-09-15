@@ -91,7 +91,7 @@ func TestSmokeAgainstLiveDB(t *testing.T) {
 	}
 
 	// --- List: scoping + extension filter + sort by editor username ---
-	all, err := files.List(ctx, ListParams{UploadedBy: alice.ID})
+	all, _, err := files.List(ctx, ListParams{UploadedBy: alice.ID})
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestSmokeAgainstLiveDB(t *testing.T) {
 		}
 	}
 
-	csOnly, err := files.List(ctx, ListParams{UploadedBy: alice.ID, Extension: "cs"})
+	csOnly, _, err := files.List(ctx, ListParams{UploadedBy: alice.ID, Extension: "cs"})
 	if err != nil {
 		t.Fatalf("list cs: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSmokeAgainstLiveDB(t *testing.T) {
 		t.Fatalf("expected exactly 1 .cs file, got %+v", csOnly)
 	}
 
-	ascByEditor, err := files.List(ctx, ListParams{UploadedBy: alice.ID, SortEditedByOrder: "asc"})
+	ascByEditor, _, err := files.List(ctx, ListParams{UploadedBy: alice.ID, SortField: SortByEditedBy, SortOrder: "asc"})
 	if err != nil {
 		t.Fatalf("list sorted asc: %v", err)
 	}

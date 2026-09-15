@@ -53,7 +53,7 @@ func newFakeSyncFileRepo() *fakeSyncFileRepo {
 
 var _ repo.FileRepo = (*fakeSyncFileRepo)(nil)
 
-func (f *fakeSyncFileRepo) List(_ context.Context, params repo.ListParams) ([]domain.File, error) {
+func (f *fakeSyncFileRepo) List(_ context.Context, params repo.ListParams) ([]domain.File, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -64,7 +64,7 @@ func (f *fakeSyncFileRepo) List(_ context.Context, params repo.ListParams) ([]do
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return out, false, nil
 }
 
 func (f *fakeSyncFileRepo) GetByID(_ context.Context, uploadedBy, id int64) (domain.File, error) {

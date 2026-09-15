@@ -23,24 +23,52 @@ type UserRepo interface {
 	GetByID(ctx context.Context, id int64) (domain.User, error)
 }
 
-// ListParams filters and orders the result of FileRepo.List.
+// SortField selects which column FileRepo.List orders by. The zero value
+// ("") means SortByName.
+type SortField string
+
+const (
+	SortByName       SortField = "name"
+	SortByCreatedAt  SortField = "createdAt"
+	SortByModifiedAt SortField = "modifiedAt"
+	// SortByUploadedBy/SortByEditedBy sort by the *username* of the
+	// uploader/editor (REQUIREMENTS.md §4), not the raw uploaded_by/edited_by id.
+	SortByUploadedBy SortField = "uploadedBy"
+	SortByEditedBy   SortField = "editedBy"
+)
+
+// ListParams filters, orders, and paginates the result of FileRepo.List.
 type ListParams struct {
 	// UploadedBy restricts the listing to files owned by this user. Every
 	// query goes through this field — a user must never be able to see
 	// another user's files.
 	UploadedBy int64
-	// SortEditedByOrder is "", "asc", or "desc". It sorts by the *name* of
-	// the user who last edited the file (REQUIREMENTS.md §4), not by the
-	// raw edited_by id.
-	SortEditedByOrder string
 	// Extension filters to files with this extension. "" means all
 	// extensions.
 	Extension string
+	// SortField is one of the SortBy* constants above; "" defaults to
+	// SortByName.
+	SortField SortField
+	// SortOrder is "asc" or "desc"; "" defaults to "asc".
+	SortOrder string
+	// Limit caps the number of files a single List call returns. Callers
+	// that don't care about pagination (internal tests, the sync/diff
+	// endpoint's own listing) can leave this at its zero value to get every
+	// matching file back in one call, with hasMore always false. Anything
+	// reachable from the HTTP API always sets a positive Limit — see
+	// handler.FileHandler's list handler.
+	Limit int
+	// Offset skips this many files (after sorting/filtering) before the
+	// page begins. Only meaningful alongside a positive Limit.
+	Offset int
 }
 
 // FileRepo persists and retrieves file metadata rows.
 type FileRepo interface {
-	List(ctx context.Context, params ListParams) ([]domain.File, error)
+	// List returns one page of files matching params. hasMore reports
+	// whether more files exist beyond what was returned (always false when
+	// params.Limit is 0, since that means "no limit").
+	List(ctx context.Context, params ListParams) (files []domain.File, hasMore bool, err error)
 	GetByID(ctx context.Context, uploadedBy, id int64) (domain.File, error)
 	Create(ctx context.Context, f domain.File) (domain.File, error)
 	Delete(ctx context.Context, uploadedBy, id int64) error

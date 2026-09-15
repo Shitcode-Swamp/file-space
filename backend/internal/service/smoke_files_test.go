@@ -82,7 +82,7 @@ func TestSmokeFileServiceRoundTrip(t *testing.T) {
 	}
 
 	// --- List with extension filter ---
-	csOnly, err := svc.List(t.Context(), repo.ListParams{UploadedBy: ownerA.ID, Extension: "cs"})
+	csOnly, _, err := svc.List(t.Context(), repo.ListParams{UploadedBy: ownerA.ID, Extension: "cs"})
 	if err != nil {
 		t.Fatalf("list extension=cs: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSmokeFileServiceRoundTrip(t *testing.T) {
 		t.Fatalf("list extension=cs: got %+v", csOnly)
 	}
 
-	all, err := svc.List(t.Context(), repo.ListParams{UploadedBy: ownerA.ID})
+	all, _, err := svc.List(t.Context(), repo.ListParams{UploadedBy: ownerA.ID})
 	if err != nil || len(all) != 2 {
 		t.Fatalf("list all: got %+v, err=%v", all, err)
 	}
@@ -157,5 +157,83 @@ func TestSmokeFileServiceRoundTrip(t *testing.T) {
 	}
 	if _, err := store.Open(t.Context(), csFile.StorageKey); err == nil {
 		t.Fatalf("storage key %q for .cs still readable after delete", csFile.StorageKey)
+	}
+}
+
+// TestSmokeCreate_RenamesOnDuplicateName exercises FileService.Create's
+// dedup path against the real migrations/0003_unique_file_name_per_owner.up.sql
+// index, not just the in-memory fake TestCreate_RenamesOnDuplicateNameForSameUser
+// covers: three uploads of the same name for one user must come back as
+// "dup.txt", "dup (1).txt", "dup (2).txt", while the same name for a
+// different user is untouched.
+func TestSmokeCreate_RenamesOnDuplicateName(t *testing.T) {
+	dsn := os.Getenv("SMOKE_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("SMOKE_DATABASE_URL not set")
+	}
+
+	sqlxDB, err := db.Connect(dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sqlxDB.Close()
+
+	store, err := storage.NewLocalFileStorage(filepath.Join(t.TempDir(), "storage"))
+	if err != nil {
+		t.Fatalf("new local storage: %v", err)
+	}
+
+	files := repo.NewPostgresFileRepo(sqlxDB)
+	users := repo.NewPostgresUserRepo(sqlxDB)
+	svc := NewFileService(files, store)
+
+	owner, err := users.Create(t.Context(), "smoke_dedup_owner", "hash")
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	other, err := users.Create(t.Context(), "smoke_dedup_other", "hash")
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	first, err := svc.Create(t.Context(), owner.ID, "dup.txt", bytes.NewReader([]byte("v1")))
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if first.Name != "dup.txt" {
+		t.Fatalf("first.Name = %q, want %q", first.Name, "dup.txt")
+	}
+
+	second, err := svc.Create(t.Context(), owner.ID, "dup.txt", bytes.NewReader([]byte("v2")))
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if second.Name != "dup (1).txt" {
+		t.Fatalf("second.Name = %q, want %q", second.Name, "dup (1).txt")
+	}
+
+	third, err := svc.Create(t.Context(), owner.ID, "dup.txt", bytes.NewReader([]byte("v3")))
+	if err != nil {
+		t.Fatalf("create third: %v", err)
+	}
+	if third.Name != "dup (2).txt" {
+		t.Fatalf("third.Name = %q, want %q", third.Name, "dup (2).txt")
+	}
+
+	// A different user uploading the exact same name is unaffected.
+	othersFile, err := svc.Create(t.Context(), other.ID, "dup.txt", bytes.NewReader([]byte("v4")))
+	if err != nil {
+		t.Fatalf("create for other user: %v", err)
+	}
+	if othersFile.Name != "dup.txt" {
+		t.Fatalf("other user's Name = %q, want %q (must not collide with owner's files)", othersFile.Name, "dup.txt")
+	}
+
+	all, _, err := svc.List(t.Context(), repo.ListParams{UploadedBy: owner.ID})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 files for owner, got %d: %+v", len(all), all)
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +45,13 @@ func newFakeFileRepo() *fakeFileRepo {
 
 var _ repo.FileRepo = (*fakeFileRepo)(nil)
 
-func (r *fakeFileRepo) List(ctx context.Context, params repo.ListParams) ([]domain.File, error) {
+// List applies extension filtering, sorting, and limit/offset pagination
+// in-memory, mirroring PostgresFileRepo.List's semantics closely enough to
+// exercise FileHandler's query-param parsing and X-Has-More header without
+// a live Postgres. uploadedBy/editedBy sort by raw numeric id rather than
+// resolved username (this fake has no username join) — real username-based
+// ordering is covered by the repo package's own Postgres-backed tests.
+func (r *fakeFileRepo) List(ctx context.Context, params repo.ListParams) ([]domain.File, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []domain.File
@@ -56,7 +64,43 @@ func (r *fakeFileRepo) List(ctx context.Context, params repo.ListParams) ([]doma
 		}
 		out = append(out, f)
 	}
-	return out, nil
+
+	desc := strings.EqualFold(params.SortOrder, "desc")
+	sort.Slice(out, func(i, j int) bool {
+		var cmp int
+		switch params.SortField {
+		case repo.SortByCreatedAt:
+			cmp = out[i].CreatedAt.Compare(out[j].CreatedAt)
+		case repo.SortByModifiedAt:
+			cmp = out[i].ModifiedAt.Compare(out[j].ModifiedAt)
+		case repo.SortByUploadedBy:
+			cmp = int(out[i].UploadedBy - out[j].UploadedBy)
+		case repo.SortByEditedBy:
+			cmp = int(out[i].EditedBy - out[j].EditedBy)
+		default:
+			cmp = strings.Compare(out[i].Name, out[j].Name)
+		}
+		if cmp == 0 {
+			return out[i].ID < out[j].ID
+		}
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+
+	if params.Limit <= 0 {
+		return out, false, nil
+	}
+	if params.Offset >= len(out) {
+		return []domain.File{}, false, nil
+	}
+	end := params.Offset + params.Limit
+	hasMore := end < len(out)
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[params.Offset:end], hasMore, nil
 }
 
 func (r *fakeFileRepo) GetByID(ctx context.Context, uploadedBy, id int64) (domain.File, error) {
@@ -256,7 +300,7 @@ func TestUpload_SupportsUkrainianAndEnglishFilenames(t *testing.T) {
 			if !bytes.Equal(downloadRec.Body.Bytes(), tc.content) {
 				t.Fatalf("downloaded content = %q, want %q", downloadRec.Body.Bytes(), tc.content)
 			}
-			wantDisposition := fmt.Sprintf("attachment; filename=%q", tc.filename)
+			wantDisposition := contentDispositionAttachment(tc.filename)
 			if got := downloadRec.Header().Get("Content-Disposition"); got != wantDisposition {
 				t.Fatalf("Content-Disposition = %q, want %q", got, wantDisposition)
 			}

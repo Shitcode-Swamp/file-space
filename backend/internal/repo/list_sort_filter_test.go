@@ -4,6 +4,7 @@ package repo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestListExtensionFilter(t *testing.T) {
 	mustCreateFile(t, ctx, files, "b.png", "k-ext-2", "png", owner.ID, owner.ID)
 	mustCreateFile(t, ctx, files, "c.txt", "k-ext-3", "txt", owner.ID, owner.ID)
 
-	pngOnly, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Extension: "png"})
+	pngOnly, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Extension: "png"})
 	if err != nil {
 		t.Fatalf("list png: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestListExtensionFilter(t *testing.T) {
 		t.Fatalf("expected exactly 1 .png file, got %+v", pngOnly)
 	}
 
-	all, err := files.List(ctx, ListParams{UploadedBy: owner.ID})
+	all, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID})
 	if err != nil {
 		t.Fatalf("list all: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestListExtensionFilter(t *testing.T) {
 		t.Fatalf("expected 3 files with no extension filter, got %d", len(all))
 	}
 
-	none, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Extension: "pdf"})
+	none, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Extension: "pdf"})
 	if err != nil {
 		t.Fatalf("list pdf (no match): %v", err)
 	}
@@ -97,17 +98,178 @@ func TestListSortByEditedByUsername(t *testing.T) {
 	fAlice := mustCreateFile(t, ctx, files, "edited-by-alice.txt", "k-sort-2", "txt", owner.ID, alice.ID)
 	fBob := mustCreateFile(t, ctx, files, "edited-by-bob.txt", "k-sort-3", "txt", owner.ID, bob.ID)
 
-	asc, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortEditedByOrder: "asc"})
+	asc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "asc"})
 	if err != nil {
 		t.Fatalf("list asc: %v", err)
 	}
 	assertFileIDOrder(t, "asc", asc, fAlice.ID, fBob.ID, fCarol.ID)
 
-	desc, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortEditedByOrder: "desc"})
+	desc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "desc"})
 	if err != nil {
 		t.Fatalf("list desc: %v", err)
 	}
 	assertFileIDOrder(t, "desc", desc, fCarol.ID, fBob.ID, fAlice.ID)
+}
+
+// TestListSortByUploadedByUsername covers sorting by the *uploader's*
+// username, the counterpart to TestListSortByEditedByUsername. Every file
+// here is uploaded by a different user (unlike edited_by, uploaded_by is
+// fixed at creation and can't be hand-picked independently the same way,
+// so each file needs its own owner).
+func TestListSortByUploadedByUsername(t *testing.T) {
+	sqlxDB, users, files := connectForListTests(t)
+	defer sqlxDB.Close()
+	ctx := context.Background()
+
+	// Usernames chosen to sort alice < bob < carol, created in a different
+	// order so insertion order != expected sort order.
+	carol, err := users.Create(ctx, "carol_up", "hash")
+	if err != nil {
+		t.Fatalf("create carol: %v", err)
+	}
+	alice, err := users.Create(ctx, "alice_up", "hash")
+	if err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	bob, err := users.Create(ctx, "bob_up", "hash")
+	if err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	// List scopes by a single UploadedBy, so to observe cross-file ordering
+	// we query each owner's single file and instead assert the SQL doesn't
+	// error and returns the right file — the actual ordering mechanism
+	// (uploader.username ASC/DESC) is identical to the edited_by case
+	// already covered above, just against a different joined column.
+	fCarol := mustCreateFile(t, ctx, files, "by-carol.txt", "k-up-1", "txt", carol.ID, carol.ID)
+	fAlice := mustCreateFile(t, ctx, files, "by-alice.txt", "k-up-2", "txt", alice.ID, alice.ID)
+	fBob := mustCreateFile(t, ctx, files, "by-bob.txt", "k-up-3", "txt", bob.ID, bob.ID)
+
+	for owner, want := range map[int64]int64{carol.ID: fCarol.ID, alice.ID: fAlice.ID, bob.ID: fBob.ID} {
+		got, _, err := files.List(ctx, ListParams{UploadedBy: owner, SortField: SortByUploadedBy, SortOrder: "asc"})
+		if err != nil {
+			t.Fatalf("list for owner %d: %v", owner, err)
+		}
+		assertFileIDOrder(t, "uploadedBy sort scoping", got, want)
+	}
+}
+
+// TestListSortByNameCreatedAtModifiedAt covers the three "plain column"
+// sort fields (no join involved), which default to SortByName when
+// unspecified.
+func TestListSortByNameCreatedAtModifiedAt(t *testing.T) {
+	sqlxDB, users, files := connectForListTests(t)
+	defer sqlxDB.Close()
+	ctx := context.Background()
+
+	owner, err := users.Create(ctx, "owner_namesort", "hash")
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+
+	// Created in an order that puts their names out of alphabetical order,
+	// so "created in this order" != "name-sorted order" != "id order".
+	fZebra := mustCreateFile(t, ctx, files, "zebra.txt", "k-name-1", "txt", owner.ID, owner.ID)
+	fApple := mustCreateFile(t, ctx, files, "apple.txt", "k-name-2", "txt", owner.ID, owner.ID)
+	fMango := mustCreateFile(t, ctx, files, "mango.txt", "k-name-3", "txt", owner.ID, owner.ID)
+
+	byNameAsc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByName, SortOrder: "asc"})
+	if err != nil {
+		t.Fatalf("list by name asc: %v", err)
+	}
+	assertFileIDOrder(t, "name asc", byNameAsc, fApple.ID, fMango.ID, fZebra.ID)
+
+	// The zero-value SortField ("") must behave identically to explicit
+	// SortByName -- it's meant to be the default.
+	byDefault, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID})
+	if err != nil {
+		t.Fatalf("list with default sort field: %v", err)
+	}
+	assertFileIDOrder(t, "default sort field", byDefault, fApple.ID, fMango.ID, fZebra.ID)
+
+	// created_at/modified_at increase with each mustCreateFile call above
+	// (zebra, apple, mango, in that order), so sorting by either ascending
+	// must reproduce creation order regardless of name.
+	byCreatedAsc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByCreatedAt, SortOrder: "asc"})
+	if err != nil {
+		t.Fatalf("list by createdAt asc: %v", err)
+	}
+	assertFileIDOrder(t, "createdAt asc", byCreatedAsc, fZebra.ID, fApple.ID, fMango.ID)
+
+	byModifiedDesc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByModifiedAt, SortOrder: "desc"})
+	if err != nil {
+		t.Fatalf("list by modifiedAt desc: %v", err)
+	}
+	assertFileIDOrder(t, "modifiedAt desc", byModifiedDesc, fMango.ID, fApple.ID, fZebra.ID)
+}
+
+// TestListPagination covers Limit/Offset/hasMore: a zero Limit returns
+// everything with hasMore always false; a positive Limit returns at most
+// that many rows and correctly reports whether more exist beyond the page;
+// paging through with Offset covers the full set exactly once, in stable
+// order (tie-broken by f.id, per the ORDER BY ... , f.id ASC clause).
+func TestListPagination(t *testing.T) {
+	sqlxDB, users, files := connectForListTests(t)
+	defer sqlxDB.Close()
+	ctx := context.Background()
+
+	owner, err := users.Create(ctx, "owner_paginate", "hash")
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+
+	const total = 5
+	want := make([]int64, total)
+	for i := range total {
+		f := mustCreateFile(t, ctx, files, fmt.Sprintf("file-%d.txt", i), fmt.Sprintf("k-page-%d", i), "txt", owner.ID, owner.ID)
+		want[i] = f.ID
+	}
+
+	unbounded, hasMore, err := files.List(ctx, ListParams{UploadedBy: owner.ID})
+	if err != nil {
+		t.Fatalf("list unbounded: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("expected hasMore=false with no Limit set")
+	}
+	assertFileIDOrder(t, "unbounded", unbounded, want...)
+
+	var gotAll []int64
+	for offset := 0; ; offset += 2 {
+		page, hasMore, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Limit: 2, Offset: offset})
+		if err != nil {
+			t.Fatalf("list page at offset %d: %v", offset, err)
+		}
+		for _, f := range page {
+			gotAll = append(gotAll, f.ID)
+		}
+		if !hasMore {
+			break
+		}
+		if len(page) != 2 {
+			t.Fatalf("expected a full page of 2 while hasMore=true, got %d", len(page))
+		}
+	}
+	if len(gotAll) != total {
+		t.Fatalf("expected %d files paged through, got %d (%v)", total, len(gotAll), gotAll)
+	}
+	for i, id := range want {
+		if gotAll[i] != id {
+			t.Fatalf("paged order mismatch at index %d: want %v, got %v", i, want, gotAll)
+		}
+	}
+
+	// A page starting exactly at the last row must report hasMore=false.
+	lastPage, hasMore, err := files.List(ctx, ListParams{UploadedBy: owner.ID, Limit: 2, Offset: total - 1})
+	if err != nil {
+		t.Fatalf("list last page: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("expected hasMore=false for the final partial page")
+	}
+	if len(lastPage) != 1 || lastPage[0].ID != want[total-1] {
+		t.Fatalf("expected exactly the last file on the final page, got %+v", lastPage)
+	}
 }
 
 // TestListSortTieBreaksByFileID covers the secondary sort key: when two
@@ -135,13 +297,13 @@ func TestListSortTieBreaksByFileID(t *testing.T) {
 		t.Fatalf("expected f2.ID > f1.ID to meaningfully test the id tie-break, got f1=%d f2=%d", f1.ID, f2.ID)
 	}
 
-	asc, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortEditedByOrder: "asc"})
+	asc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "asc"})
 	if err != nil {
 		t.Fatalf("list asc: %v", err)
 	}
 	assertFileIDOrder(t, "asc tie-break", asc, f1.ID, f2.ID)
 
-	desc, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortEditedByOrder: "desc"})
+	desc, _, err := files.List(ctx, ListParams{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "desc"})
 	if err != nil {
 		t.Fatalf("list desc: %v", err)
 	}
@@ -173,10 +335,10 @@ func TestListScopingIgnoresOtherUsersFiles(t *testing.T) {
 	for _, params := range []ListParams{
 		{UploadedBy: owner.ID},
 		{UploadedBy: owner.ID, Extension: "png"},
-		{UploadedBy: owner.ID, SortEditedByOrder: "asc"},
-		{UploadedBy: owner.ID, SortEditedByOrder: "desc"},
+		{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "asc"},
+		{UploadedBy: owner.ID, SortField: SortByEditedBy, SortOrder: "desc"},
 	} {
-		got, err := files.List(ctx, params)
+		got, _, err := files.List(ctx, params)
 		if err != nil {
 			t.Fatalf("list %+v: %v", params, err)
 		}
