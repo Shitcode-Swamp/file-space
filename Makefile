@@ -11,7 +11,7 @@ DB_CONTAINER := filespace-db
 .PHONY: help \
 	backend-build backend-vet backend-test backend-test-smoke backend-fmt backend-run \
 	frontend-install frontend-dev frontend-build frontend-lint \
-	desktop-build desktop-run desktop-test \
+	desktop-build desktop-run desktop-test desktop-dmg \
 	db-up db-down migrate-up migrate-down \
 	build test fmt
 
@@ -34,6 +34,7 @@ help:
 	@echo "  make desktop-build        swift build"
 	@echo "  make desktop-run          swift run"
 	@echo "  make desktop-test         swift test (needs full Xcode.app, not just CLT)"
+	@echo "  make desktop-dmg         build a release .dmg at desktop/dist/FileSpace.dmg"
 	@echo ""
 	@echo "Local Postgres (docker) + migrations:"
 	@echo "  make db-up                start/create the local 'filespace-db' container on :5432"
@@ -96,6 +97,9 @@ desktop-run:
 
 desktop-test:
 	cd desktop && swift test
+
+desktop-dmg:
+	desktop/scripts/build-dmg.sh
 
 # --- Local Postgres (docker) + migrations ---
 
