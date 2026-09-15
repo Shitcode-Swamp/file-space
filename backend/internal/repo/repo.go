@@ -31,8 +31,6 @@ const (
 	SortByName       SortField = "name"
 	SortByCreatedAt  SortField = "createdAt"
 	SortByModifiedAt SortField = "modifiedAt"
-	// SortByUploadedBy/SortByEditedBy sort by the *username* of the
-	// uploader/editor (REQUIREMENTS.md §4), not the raw uploaded_by/edited_by id.
 	SortByUploadedBy SortField = "uploadedBy"
 	SortByEditedBy   SortField = "editedBy"
 )

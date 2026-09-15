@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -144,10 +146,17 @@ func (s *FileService) Create(ctx context.Context, uploadedBy int64, filename str
 
 	key := fmt.Sprintf("%d/%d-%s", uploadedBy, time.Now().UnixNano(), base)
 
-	counted := &countingReader{r: r}
+	// Hash alongside the save rather than in a second pass over the bytes:
+	// storage.Save fully drains whatever it's given, so by the time it
+	// returns, every byte has also flowed through hasher via the TeeReader.
+	// This is what lets the sync/diff protocol detect real conflicts
+	// (REQUIREMENTS.md §6.2) instead of only ever reporting "download".
+	hasher := sha256.New()
+	counted := &countingReader{r: io.TeeReader(r, hasher)}
 	if err := s.storage.Save(ctx, key, counted); err != nil {
 		return domain.File{}, fmt.Errorf("service: save file content: %w", err)
 	}
+	sha256Hex := hex.EncodeToString(hasher.Sum(nil))
 
 	name := base
 	for attempt := 1; ; attempt++ {
@@ -158,6 +167,7 @@ func (s *FileService) Create(ctx context.Context, uploadedBy int64, filename str
 			Size:       counted.n,
 			UploadedBy: uploadedBy,
 			EditedBy:   uploadedBy,
+			SHA256:     sha256Hex,
 		})
 		if err == nil {
 			return created, nil

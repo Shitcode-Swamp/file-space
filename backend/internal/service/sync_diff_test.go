@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"filespace/backend/internal/domain"
 	"filespace/backend/internal/repo"
@@ -427,5 +428,121 @@ func TestSyncServiceDiff_ScopedPerUser(t *testing.T) {
 	}
 	if len(actionsB) != 1 || actionsB[0].Name != "b1.txt" || actionsB[0].Action != ActionDeleteLocal {
 		t.Fatalf("userB actions = %+v, want exactly one delete_local for b1.txt", actionsB)
+	}
+}
+
+// 7. A file changed server-side (present in `changed`) whose name the
+// client's manifest also lists, with a DIFFERENT hash than the server's
+// current one, is a genuine conflict: both sides changed since the client
+// last synced. Diff must report "conflict", not "download", and carry the
+// server's current size/modifiedAt/editedBy for the resolution UI.
+func TestSyncServiceDiff_ConflictWhenHashesDiffer(t *testing.T) {
+	ctx := context.Background()
+	files := newFakeSyncFileRepo()
+	svc := NewSyncService(files)
+
+	const owner = int64(1)
+	modTime := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	f, err := files.Create(ctx, domain.File{
+		Name: "budget.xlsx", StorageKey: "key-budget", UploadedBy: owner, EditedBy: owner,
+		Size: 84_000, ModifiedAt: modTime, SHA256: "remote-hash",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	actions, newVersion, err := svc.Diff(ctx, owner, 0, ManifestEntry{Name: "budget.xlsx", SHA256: "local-hash"})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("actions = %+v, want exactly 1", actions)
+	}
+	got := actions[0]
+	if got.Action != ActionConflict {
+		t.Fatalf("action = %+v, want Action=%q", got, ActionConflict)
+	}
+	if got.RemoteVersion != f.Version || got.RemoteSize != f.Size || !got.RemoteModifiedAt.Equal(f.ModifiedAt) || got.RemoteEditedBy != f.EditedBy {
+		t.Fatalf("conflict details = %+v, want to mirror the server file %+v", got, f)
+	}
+	if newVersion != f.Version {
+		t.Fatalf("newVersion = %d, want %d", newVersion, f.Version)
+	}
+}
+
+// 8. A file changed server-side whose manifest hash MATCHES the server's
+// current hash means the client already has the right content (e.g. it
+// made the exact same edit, or already caught up via another path) -- not a
+// conflict, and not worth a "download" either, so it must be silently
+// dropped from the response entirely.
+func TestSyncServiceDiff_NoActionWhenHashesMatch(t *testing.T) {
+	ctx := context.Background()
+	files := newFakeSyncFileRepo()
+	svc := NewSyncService(files)
+
+	const owner = int64(1)
+	if _, err := files.Create(ctx, domain.File{
+		Name: "notes.md", StorageKey: "key-notes", UploadedBy: owner, EditedBy: owner,
+		SHA256: "same-hash",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	actions, _, err := svc.Diff(ctx, owner, 0, ManifestEntry{Name: "notes.md", SHA256: "same-hash"})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("actions = %+v, want empty (already in sync)", actions)
+	}
+}
+
+// 9. A changed file with no hash on either side (server row predates
+// migrations/0004_file_sha256, or the manifest entry's hash is empty) can't
+// be compared at all -- Diff must fall back to plain "download" rather than
+// guessing at a conflict it has no evidence for.
+func TestSyncServiceDiff_DownloadWhenHashUnavailable(t *testing.T) {
+	ctx := context.Background()
+	files := newFakeSyncFileRepo()
+	svc := NewSyncService(files)
+
+	const owner = int64(1)
+	// No SHA256 set -- simulates a pre-migration row.
+	f, err := files.Create(ctx, domain.File{Name: "legacy.txt", StorageKey: "key-legacy", UploadedBy: owner, EditedBy: owner})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	actions, _, err := svc.Diff(ctx, owner, 0, ManifestEntry{Name: "legacy.txt", SHA256: "whatever-the-client-has"})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Action != ActionDownload || actions[0].RemoteVersion != f.Version {
+		t.Fatalf("actions = %+v, want a single download action for legacy.txt", actions)
+	}
+}
+
+// 10. A changed file whose name simply isn't in the manifest at all (the
+// client never had it, or omitted the manifest entirely) is an ordinary
+// download -- exactly the pre-manifest behavior, now proven to still hold
+// once a (non-matching) manifest is involved elsewhere in the same call.
+func TestSyncServiceDiff_DownloadWhenNameNotInManifest(t *testing.T) {
+	ctx := context.Background()
+	files := newFakeSyncFileRepo()
+	svc := NewSyncService(files)
+
+	const owner = int64(1)
+	f, err := files.Create(ctx, domain.File{Name: "new-to-you.txt", StorageKey: "key-new", UploadedBy: owner, EditedBy: owner, SHA256: "some-hash"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Manifest mentions an unrelated file only.
+	actions, _, err := svc.Diff(ctx, owner, 0, ManifestEntry{Name: "unrelated.txt", SHA256: "irrelevant"})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(actions) != 1 || actions[0].Action != ActionDownload || actions[0].RemoteVersion != f.Version {
+		t.Fatalf("actions = %+v, want a single download action for new-to-you.txt", actions)
 	}
 }

@@ -36,6 +36,7 @@ type fileRow struct {
 	UploadedBy int64          `db:"uploaded_by"`
 	EditedBy   int64          `db:"edited_by"`
 	Version    int64          `db:"version"`
+	SHA256     sql.NullString `db:"sha256"`
 }
 
 func (r fileRow) toDomain() domain.File {
@@ -50,6 +51,7 @@ func (r fileRow) toDomain() domain.File {
 		UploadedBy: r.UploadedBy,
 		EditedBy:   r.EditedBy,
 		Version:    r.Version,
+		SHA256:     r.SHA256.String,
 	}
 }
 
@@ -92,7 +94,7 @@ var sortExprs = map[SortField]string{
 func (r *PostgresFileRepo) List(ctx context.Context, params ListParams) ([]domain.File, bool, error) {
 	query := `
 		SELECT f.id, f.name, f.storage_key, f.size, f.extension,
-		       f.created_at, f.modified_at, f.uploaded_by, f.edited_by, f.version
+		       f.created_at, f.modified_at, f.uploaded_by, f.edited_by, f.version, f.sha256
 		FROM files f
 		JOIN users uploader ON uploader.id = f.uploaded_by
 		JOIN users editor ON editor.id = f.edited_by
@@ -143,7 +145,7 @@ func (r *PostgresFileRepo) List(ctx context.Context, params ListParams) ([]domai
 func (r *PostgresFileRepo) GetByID(ctx context.Context, uploadedBy, id int64) (domain.File, error) {
 	const query = `
 		SELECT id, name, storage_key, size, extension,
-		       created_at, modified_at, uploaded_by, edited_by, version
+		       created_at, modified_at, uploaded_by, edited_by, version, sha256
 		FROM files
 		WHERE id = $1 AND uploaded_by = $2`
 
@@ -161,14 +163,14 @@ func (r *PostgresFileRepo) GetByID(ctx context.Context, uploadedBy, id int64) (d
 // and timestamps.
 func (r *PostgresFileRepo) Create(ctx context.Context, f domain.File) (domain.File, error) {
 	const query = `
-		INSERT INTO files (name, storage_key, size, extension, uploaded_by, edited_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO files (name, storage_key, size, extension, uploaded_by, edited_by, sha256)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, name, storage_key, size, extension,
-		          created_at, modified_at, uploaded_by, edited_by, version`
+		          created_at, modified_at, uploaded_by, edited_by, version, sha256`
 
 	var row fileRow
 	if err := r.db.GetContext(ctx, &row, query,
-		f.Name, f.StorageKey, f.Size, f.Extension, f.UploadedBy, f.EditedBy,
+		f.Name, f.StorageKey, f.Size, f.Extension, f.UploadedBy, f.EditedBy, f.SHA256,
 	); err != nil {
 		return domain.File{}, fmt.Errorf("repo: create file: %w", err)
 	}
@@ -226,7 +228,7 @@ func (r *PostgresFileRepo) Delete(ctx context.Context, uploadedBy, id int64) err
 func (r *PostgresFileRepo) ListChangedSince(ctx context.Context, uploadedBy, sinceVersion int64) ([]domain.File, []domain.Deletion, int64, error) {
 	const filesQuery = `
 		SELECT id, name, storage_key, size, extension,
-		       created_at, modified_at, uploaded_by, edited_by, version
+		       created_at, modified_at, uploaded_by, edited_by, version, sha256
 		FROM files
 		WHERE uploaded_by = $1 AND version > $2
 		ORDER BY version ASC`

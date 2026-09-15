@@ -45,7 +45,7 @@ func TestSmokeSyncHTTPRoundTrip(t *testing.T) {
 	authSvc := service.NewAuthService(users, secret)
 	syncSvc := service.NewSyncService(files)
 	authHandler := NewAuthHandler(authSvc)
-	syncHandler := NewSyncHandler(syncSvc)
+	syncHandler := NewSyncHandler(syncSvc, users)
 
 	r := chi.NewRouter()
 	r.Route("/api/auth", authHandler.Routes)

@@ -25,6 +25,12 @@ type File struct {
 	UploadedBy int64
 	EditedBy   int64
 	Version    int64
+	// SHA256 is the hex-encoded content hash computed at upload time (see
+	// FileService.Create), used by the sync/diff protocol to detect
+	// conflicts (REQUIREMENTS.md §6.2). Empty for rows created before this
+	// column existed (migrations/0004) -- Diff treats an empty hash as "not
+	// enough information to call a conflict," not as a mismatch.
+	SHA256 string
 }
 
 // Deletion is a tombstone record left behind when a file is deleted, so

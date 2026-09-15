@@ -50,7 +50,7 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(authSvc)
 	fileHandler := handler.NewFileHandler(fileSvc, userRepo)
-	syncHandler := handler.NewSyncHandler(syncSvc)
+	syncHandler := handler.NewSyncHandler(syncSvc, userRepo)
 
 	r := chi.NewRouter()
 
