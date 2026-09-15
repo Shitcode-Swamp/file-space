@@ -33,7 +33,7 @@ protocol APIClientProtocol: Sendable {
     func downloadFile(id: Int64) async throws -> (data: Data, filename: String?)
     func uploadFile(fileURL: URL) async throws -> FileRecord
     func deleteFile(id: Int64) async throws
-    func syncDiff(lastSyncedVersion: Int64) async throws -> SyncDiffResponse
+    func syncDiff(lastSyncedVersion: Int64, manifest: [SyncManifestEntryDTO]) async throws -> SyncDiffResponse
 }
 
 /// Stateless except for its own URLSession; all session state (tokens)
@@ -281,8 +281,11 @@ final class APIClient: APIClientProtocol, Sendable {
 
     // MARK: - Sync
 
-    func syncDiff(lastSyncedVersion: Int64) async throws -> SyncDiffResponse {
-        let request = try jsonRequest("api/sync/diff", method: "POST", body: SyncDiffRequest(lastSyncedVersion: lastSyncedVersion))
+    func syncDiff(lastSyncedVersion: Int64, manifest: [SyncManifestEntryDTO]) async throws -> SyncDiffResponse {
+        let request = try jsonRequest(
+            "api/sync/diff", method: "POST",
+            body: SyncDiffRequest(lastSyncedVersion: lastSyncedVersion, manifest: manifest)
+        )
         let (data, _) = try await send(request)
         return try decoder.decode(SyncDiffResponse.self, from: data)
     }
@@ -291,7 +294,7 @@ final class APIClient: APIClientProtocol, Sendable {
 
     private struct Credentials: Encodable { let username: String; let password: String }
     private struct RefreshRequest: Encodable { let refreshToken: String }
-    private struct SyncDiffRequest: Encodable { let lastSyncedVersion: Int64 }
+    private struct SyncDiffRequest: Encodable { let lastSyncedVersion: Int64; let manifest: [SyncManifestEntryDTO] }
     private struct InitiateUploadRequest: Encodable { let filename: String; let size: Int64 }
     private struct InitiateUploadResponse: Decodable { let uploadId: String; let chunkSize: Int64 }
 

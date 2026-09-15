@@ -53,6 +53,17 @@ struct ErrorBody: Codable, Sendable {
     let error: String
 }
 
+/// POST /api/sync/diff request shape (REQUIREMENTS.md §6.1/§6.6). manifest
+/// is the client's current local file list -- sending it is what lets the
+/// server tell a genuine conflict ("exists, hash differs" per §6.2) apart
+/// from an ordinary download; see backend/internal/service/sync.go.
+struct SyncManifestEntryDTO: Encodable, Sendable {
+    let name: String
+    let size: Int64
+    let mtime: String
+    let sha256: String
+}
+
 /// POST /api/sync/diff response shape (REQUIREMENTS.md §6.6).
 struct SyncDiffResponse: Codable, Sendable {
     let newVersion: Int64
@@ -63,9 +74,20 @@ struct SyncActionDTO: Codable, Sendable {
     let name: String
     let action: String
     let remoteVersion: Int64
+    let conflict: SyncConflictDTO?
+}
+
+/// Only present on a SyncActionDTO whose action is "conflict" -- everything
+/// the conflict-resolution sheet needs to show the incoming server-side
+/// version next to the client's own local one.
+struct SyncConflictDTO: Codable, Sendable {
+    let remoteSize: Int64
+    let remoteModifiedAt: Date
+    let remoteEditedBy: String
 }
 
 enum SyncActionKind {
     static let download = "download"
     static let deleteLocal = "delete_local"
+    static let conflict = "conflict"
 }
