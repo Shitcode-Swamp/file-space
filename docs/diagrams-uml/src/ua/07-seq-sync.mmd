@@ -1,33 +1,43 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 sequenceDiagram
     actor U as Користувач
-    participant W as FSEvents<br/>(watcher, Swift)
-    participant SC as SyncController<br/>(Swift-клієнт)
+    participant W as DirectoryWatcher<br/>(FSEvents, Swift)
+    participant SC as SyncViewModel<br/>(Swift-клієнт)
     participant H as SyncHandler<br/>(Go API)
-    participant SS as SyncDiffService
-    participant REP as FileRepository
+    participant SS as SyncService
+    participant REP as FileRepo
     participant DB as PostgreSQL
 
-    W->>SC: подія зміни локальної теки
-    SC->>SC: обчислити маніфест<br/>{name, size, mtime, sha256}
-    SC->>H: POST /api/sync/diff<br/>{manifest, lastSyncedVersion}
-    H->>SS: computeDiff(manifest, lastSyncedVersion)
-    SS->>REP: findChangedSince(lastSyncedVersion)
-    REP->>DB: SELECT files, change_log
-    DB-->>REP: rows
-    REP-->>SS: список файлів і версій
-    SS->>SS: порівняти hash/версії,<br/>визначити дію для файлу
-    SS-->>H: { newVersion, actions[] }
-    H-->>SC: 200 OK { newVersion, actions[] }
+    W->>SC: подія зміни локальної теки<br/>(дебаунс 1.5с) / таймер опитування 45с
+    SC->>SC: GET /api/files (список віддалених)
+    SC->>H: POST /api/sync/diff<br/>{lastSyncedVersion}
+    H->>SS: Diff(uploadedBy, sinceVersion)
+    SS->>REP: ListChangedSince(uploadedBy, sinceVersion)
+    REP->>DB: SELECT files, file_deletions<br/>WHERE version > sinceVersion
+    DB-->>REP: змінені рядки, видалені рядки, currentVersion
+    REP-->>SS: files[], deletions[], currentVersion
+    SS-->>H: actions[] (download | delete_local), newVersion
+    H-->>SC: 200 OK { actions[], newVersion }
 
     loop для кожної дії
-        alt action == upload/download/delete_local/noop
-            SC->>SC: виконати дію локально
-        else action == conflict
-            SC->>U: показати діалог конфлікту
-            U-->>SC: Keep local / Keep remote / Keep both
-            SC->>SC: застосувати вибір користувача
+        alt action == download
+            SC->>SC: завантажити вміст, записати<br/>у локальну теку, зберегти позицію
+        else action == delete_local
+            SC->>SC: видалити локальний файл, прибрати позицію
         end
     end
+    SC->>SC: lastSyncedVersion := newVersion
 
-    SC->>SC: зберегти newVersion як lastSyncedVersion
+    SC->>SC: сканувати локальну теку<br/>(ім'я, розмір, sha256)
+    loop для кожного локального файлу відносно відомих позицій
+        alt новий файл, немає відповідника на сервері
+            SC->>H: POST /api/files (вивантаження)
+        else відомий файл, вміст змінився
+            SC->>H: DELETE /api/files/{id}<br/>POST /api/files (повторне вивантаження)
+        else відома позиція, файл відсутній локально
+            SC->>H: DELETE /api/files/{id}
+        end
+    end
+    SC->>SC: зберегти стан синхронізації на диск
+
+    note over SC,U: Якщо той самий файл змінюється з обох боків між<br/>двома циклами, перемагає та половина цієї<br/>процедури, яка виконається першою —<br/>порівняння маніфестів на сервері відсутнє,<br/>тож справжній конфлікт не виявляється й не<br/>показується користувачу.

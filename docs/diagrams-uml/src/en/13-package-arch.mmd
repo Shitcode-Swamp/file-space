@@ -2,14 +2,15 @@
 flowchart TB
     subgraph FE["«package» frontend (React + TS)"]
         direction TB
-        FEUi["ui / components<br/>(file table, preview)"]
-        FEState["api client<br/>(TanStack Query, TanStack Table)"]
+        FEUi["ui / components<br/>(App, columns, FilePreviewModal,<br/>SettingsModal, auth/LoginPage)"]
+        FEState["api client<br/>(TanStack Query, TanStack Table,<br/>TanStack Virtual)"]
     end
 
     subgraph DE["«package» desktop (Swift)"]
         direction TB
-        DEUi["SwiftUI views"]
-        DESync["SyncEngine<br/>(FSEvents, sync cursor)"]
+        DEUi["SwiftUI views<br/>(MainView, LoginView,<br/>SyncPanelView, FilePreviewView)"]
+        DESync["Sync<br/>(DirectoryWatcher, SyncViewModel,<br/>Manifest.swift: SyncState/FolderScanner)"]
+        DEApi["APIClient + KeychainStore"]
     end
 
     subgraph BE["«package» backend (Go module)"]
@@ -22,14 +23,22 @@ flowchart TB
         end
         subgraph BEStorage["«package» storage<br/>(internal/storage, FileStorage)"]
         end
+        subgraph BESupport["«package» domain, db, config,<br/>authctx (internal/*)"]
+        end
         BEHandler -. "calls" .-> BEService
         BEService -. "calls" .-> BERepo
         BEService -. "calls" .-> BEStorage
+        BEHandler -. "uses" .-> BESupport
+        BEService -. "uses" .-> BESupport
+        BERepo -. "uses" .-> BESupport
     end
 
     subgraph MIG["«package» migrations<br/>(golang-migrate SQL)"]
     end
 
+    DEApi --> DEUi
+    DEApi --> DESync
+
     FEState -. "HTTPS / JSON REST" .-> BEHandler
-    DESync -. "HTTPS / JSON REST" .-> BEHandler
+    DEApi -. "HTTPS / JSON REST" .-> BEHandler
     BERepo -. "schema defined by" .-> MIG

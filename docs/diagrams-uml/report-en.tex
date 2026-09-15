@@ -70,7 +70,7 @@
 
 \begin{abstract}
 \noindent
-This document presents a set of UML diagrams for the \textbf{Remote File Folder Client} project --- an application for working with a remote file folder (a simplified analogue of Google Drive) with web and desktop clients, a Go backend, PostgreSQL, and file synchronization based on diff manifests. The diagrams are ordered according to the design lifecycle: from requirements analysis and high-level architecture to the detailed design of individual subsystems. All diagrams were built using Mermaid notation.
+This document presents a set of UML diagrams for the \textbf{Remote File Folder Client} project --- an application for working with a remote file folder (a simplified analogue of Google Drive) with web and desktop clients, a Go backend, PostgreSQL, and local-folder synchronization built on a server-side version cursor plus client-side local scanning. The diagrams describe the system as it is actually implemented, and are ordered according to the design lifecycle: from requirements analysis and high-level architecture to the detailed design of individual subsystems. All diagrams were built using Mermaid notation.
 \end{abstract}
 
 \tableofcontents
@@ -82,18 +82,21 @@ This document presents a set of UML diagrams for the \textbf{Remote File Folder 
 
 The system gives an authenticated user access to a personal remote folder (a ``virtual drive''), where they can view the list of files along with their attributes (name, creation date, modification date, uploader, last editor), upload, download, and delete files, as well as synchronize a chosen local directory with the remote one.
 
-Key functional requirements:
+Key functional requirements, as actually implemented:
 
 \begin{itemize}[nosep]
-    \item user authentication on the remote server;
+    \item user registration and authentication on the remote server (username/password, JWT access + refresh tokens);
     \item viewing file attributes with the ability to show/hide columns (the file name column cannot be hidden);
     \item viewing the content of specific file types: \texttt{.java} -- as text, \texttt{.png} -- as an image;
-    \item sorting files by the username of the last editor (ascending / descending);
-    \item filtering files: all files / only \texttt{.cs} / only \texttt{.jpg};
-    \item synchronizing the local folder with the remote one based on manifest comparison (\texttt{name, size, mtime, sha256}) and handling editing conflicts.
+    \item sorting files by any column -- name, creation date, modification date, uploader, or last editor (ascending / descending);
+    \item filtering files by extension, via a dropdown populated from the extensions actually present among the user's files;
+    \item uploading either as a single \texttt{multipart/form-data} request, or, for large files, as a chunked session (\texttt{initiate} $\to$ N $\times$ \texttt{chunk} $\to$ \texttt{complete}) that keeps every individual HTTP request under the Cloudflare Tunnel free-tier body-size limit;
+    \item synchronizing the local folder with the remote one: the server reports what changed since the client's last-seen version (a \texttt{download}/\texttt{delete\_local} diff only), and the client independently reconciles its own local changes (new/changed/removed files) by uploading, re-uploading, or deleting on the server.
 \end{itemize}
 
-Architecturally, the system consists of a React client (web), a Swift client (macOS, with full background synchronization via \texttt{FSEvents}), a Go API server (handler / service / repository layers), PostgreSQL for metadata, and an abstract file storage (local disk or S3-compatible storage), deployed on a home Ubuntu server and published via Cloudflare Tunnel.
+\textbf{Scope note.} REQUIREMENTS.md originally sketched a fuller protocol in which the client also submits a local manifest (\texttt{name, size, mtime, sha256} per file) so the server could detect genuine bidirectional edit conflicts and offer ``keep local / keep remote / keep both'' resolution. The shipped \texttt{POST /api/sync/diff} endpoint accepts that manifest field for forward compatibility but does not read or compare it -- this is a deliberate, documented scope reduction (see \texttt{backend/internal/service/sync.go} and \texttt{desktop/.../SyncViewModel.swift}), not an oversight. Consequently, if the same file changes on both the local folder and the server between two sync cycles, there is no conflict detection or user prompt: whichever half of the client's reconcile routine runs first simply wins (last-writer-wins). The diagrams in this report describe the system exactly as built, including this limitation, rather than the originally sketched conflict-resolution design.
+
+Architecturally, the system consists of a React client (web, served by a static-file nginx container), a Swift client (macOS, with a local \texttt{FSEvents}-based folder watcher plus a periodic poll), a Go API server (handler / service / repository layers), PostgreSQL for metadata, and a \texttt{FileStorage} abstraction currently backed by local disk only (an S3/R2-compatible implementation is a documented future extension point, not yet written), deployed on a home Ubuntu server and published via Cloudflare Tunnel.
 
 Based on these requirements, the following sections build a use case diagram as well as architectural and detailed diagrams describing the structure and behavior of the system.
 
@@ -107,7 +110,7 @@ This stage defines the overall system architecture: who its users are and which 
 \subsection{Use Case Diagram}
 % ---------------------------------------------------------------------
 
-The diagram (fig.~\ref{fig:usecase}) shows a single \emph{User} actor who works with the system through a web or desktop client, and the main use cases corresponding to the functional requirements from section~1. Some of the file operations \emph{include} (\texttt{«include»}) the \emph{``Authenticate''} use case, since access to the workspace is only possible after a successful login. Viewing file content is \emph{extended} (\texttt{«extend»}) by two alternative display scenarios (\texttt{.java} / \texttt{.png}), and synchronization is extended by a conflict-resolution scenario that is activated only when discrepancies exist.
+The diagram (fig.~\ref{fig:usecase}) shows a single \emph{User} actor who works with the system through a web or desktop client, and the main use cases corresponding to the functional requirements from section~1, including \emph{``Register''} as an independent entry point. Some of the file operations \emph{include} (\texttt{«include»}) the \emph{``Authenticate''} use case, since access to the workspace is only possible after a successful login. Viewing file content is \emph{extended} (\texttt{«extend»}) by two alternative display scenarios (\texttt{.java} / \texttt{.png}). Unlike an earlier version of this diagram, there is no ``Resolve sync conflict'' use case extending synchronization -- as noted in section~1's scope note, no conflict is ever detected or surfaced to the user in the shipped implementation.
 
 \emph{Notation note:} Mermaid has no built-in use case diagram type, so the actor, use cases, and system boundary were built using \texttt{flowchart} (actor -- rounded rectangle, use cases -- ``stadium'' shape, system boundary -- \texttt{subgraph}), with explicit stereotype labels \texttt{«include»}/\texttt{«extend»} on the relations.
 
@@ -117,7 +120,7 @@ The diagram (fig.~\ref{fig:usecase}) shows a single \emph{User} actor who works 
 \subsection{Class Diagram (General Structure)}
 % ---------------------------------------------------------------------
 
-Fig.~\ref{fig:class-hl} displays the general data structure and the main relationships between the domain classes of the system, without detailing the methods of individual scenarios: the \texttt{User} and \texttt{File} entities, the service layer (\texttt{AuthService}, \texttt{FileService}, \texttt{SyncDiffService}), the data access layer (\texttt{FileRepository}), and the \texttt{FileStorage} abstraction, implemented by local disk storage and S3-compatible storage -- following the ``storage behind an interface'' principle laid out in the requirements (sections 5.2, 5.5).
+Fig.~\ref{fig:class-hl} displays the general data structure and the main relationships between the domain classes of the system, without detailing every method: the \texttt{User} and \texttt{File} entities (matching \texttt{backend/internal/domain/models.go} -- note \texttt{User} carries a \texttt{username}, not an email, and \texttt{File} has no stored \texttt{sha256}), the \texttt{Deletion} tombstone entity that lets the sync endpoint distinguish ``deleted'' from ``never downloaded'', the service layer (\texttt{AuthService}, \texttt{FileService}, \texttt{SyncService}), the data access layer (\texttt{FileRepo}), and the \texttt{FileStorage} abstraction -- following the ``storage behind an interface'' principle laid out in the requirements (sections 5.2, 5.5). Only \texttt{LocalFileStorage} is implemented today; the interface is what would let an S3/R2-compatible backend be added later without touching callers, but no such implementation exists yet, so it is intentionally omitted from the diagram. Likewise, authentication issues stateless JWT access/refresh tokens directly rather than persisting a \texttt{Session} entity -- there is no server-side session table or revocation list.
 
 \diagramland{img/en/02-class-highlevel.pdf}{High-level class diagram (domain model)}{0.98}{fig:class-hl}
 
@@ -125,7 +128,7 @@ Fig.~\ref{fig:class-hl} displays the general data structure and the main relatio
 \subsection{Deployment Diagram (General Architecture)}
 % ---------------------------------------------------------------------
 
-Fig.~\ref{fig:deployment} displays the physical topology of the system: client devices (browser, macOS), the Cloudflare edge (TLS termination, public DNS), and a home Ubuntu server that, via Docker Compose, runs three containers -- \texttt{cloudflared} (outbound tunnel without opening ports), \texttt{api} (the Go binary), and \texttt{db} (PostgreSQL) -- together with a persistent \texttt{pgdata} volume and a bind-mounted directory for file storage.
+Fig.~\ref{fig:deployment} displays the physical topology of the system: client devices (browser, macOS), the Cloudflare edge (TLS termination, public DNS), and a home Ubuntu server that, via Docker Compose, runs four containers -- \texttt{cloudflared} (outbound tunnel without opening ports, routing by path), \texttt{api} (the Go binary), \texttt{web} (nginx serving the built React SPA as static files), and \texttt{db} (PostgreSQL) -- together with a persistent \texttt{pgdata} volume and a bind-mounted \texttt{../storage} directory for file content. \texttt{cloudflared} routes requests under \texttt{/api/*} to \texttt{api} and everything else to \texttt{web}, so the SPA and the API share one public hostname (see \texttt{deploy/docker-compose.yml} and \texttt{deploy/cloudflared/config.yml.example}).
 
 \diagram{img/en/10-deployment.pdf}{Deployment diagram}{0.98}{fig:deployment}
 
@@ -133,31 +136,33 @@ Fig.~\ref{fig:deployment} displays the physical topology of the system: client d
 \section{Detailed Design}
 % =====================================================================
 
-Detailed design reveals the internal structure and behavior of individual subsystems: the classes participating in the implementation of a specific use case (VOPC diagram), a concrete runtime snapshot of objects during a conflict (object diagram), the interaction of objects over time -- shown both in a time-ordered (sequence) and a structural (communication) notation --, the behavior of a file depending on its synchronization state (state diagram), the structure of software components (component diagram), the modular organization of the code (package diagram), and the business-process logic of synchronization (activity diagram).
+Detailed design reveals the internal structure and behavior of individual subsystems: the classes participating in the implementation of a specific use case (VOPC diagram), a concrete runtime snapshot of objects mid-reconcile (object diagram), the interaction of objects over time -- shown both in a time-ordered (sequence) and a structural (communication) notation --, the behavior of a file depending on its synchronization state (state diagram), the structure of software components (component diagram), the modular organization of the code (package diagram), and the business-process logic of synchronization (activity diagram).
 
 % ---------------------------------------------------------------------
 \subsection{VOPC Class Diagram for the ``Synchronize local folder with remote'' use case}
 % ---------------------------------------------------------------------
 
-According to the assignment variant, the use case chosen for the VOPC diagram (\emph{View Of Participating Classes}) is \textbf{``Synchronize local folder with remote''} -- the most complex and most thoroughly described scenario in the requirements (section 6 of the requirements). Classes are distributed according to standard analysis stereotypes:
+According to the assignment variant, the use case chosen for the VOPC diagram (\emph{View Of Participating Classes}) is \textbf{``Synchronize local folder with remote''} -- the most complex scenario in the system, now shown with the classes that actually implement it in \texttt{desktop/Sources/FileSpaceDesktop/} and \texttt{backend/internal/{handler,service}/sync.go}. Classes are distributed according to standard analysis stereotypes:
 
 \begin{itemize}[nosep]
-    \item \texttt{«boundary»} -- user interaction elements: the folder watcher (\texttt{FolderWatcherUI}), the manual sync button (\texttt{SyncNowButtonUI}), the conflict resolution dialog (\texttt{ConflictDialogUI});
-    \item \texttt{«control»} -- control logic: \texttt{SyncController} (client), \texttt{SyncDiffService} (server, diff computation), \texttt{ConflictResolver} (applying the user's choice);
-    \item \texttt{«entity»} -- domain data: \texttt{ManifestEntry}, \texttt{SyncCursor}, \texttt{File}, \texttt{ChangeLogEntry}.
+    \item \texttt{«boundary»} -- user- and OS-facing elements: \texttt{SyncPanelView} (choose folder / start / stop), \texttt{DirectoryWatcher} (the \texttt{FSEvents} wrapper that raises local-change events);
+    \item \texttt{«control»} -- control logic: \texttt{SyncViewModel} (client-side reconcile loop), \texttt{FolderScanner} (computes the local manifest), \texttt{SyncHandler}/\texttt{SyncService} (server, one-way diff computation);
+    \item \texttt{«entity»} -- domain data: \texttt{SyncState} (persisted cursor and per-file known entries), \texttt{SyncedFileEntry}, \texttt{File}, \texttt{Deletion}.
 \end{itemize}
+
+There is deliberately no \texttt{ConflictResolver} or \texttt{ConflictDialogUI} in this diagram: as explained in section~1's scope note, the server never reports a \texttt{conflict} action, so no client-side class exists to resolve one.
 
 \diagramland{img/en/03-class-vopc-sync.pdf}{VOPC class diagram for the ``Synchronize local folder with remote'' use case}{0.98}{fig:vopc}
 
 % ---------------------------------------------------------------------
-\subsection{Object Diagram (Conflict Snapshot)}
+\subsection{Object Diagram (Sync-State Snapshot)}
 % ---------------------------------------------------------------------
 
-Unlike class diagrams, which describe the structure of types, an object diagram (fig.~\ref{fig:object}) captures a \emph{concrete runtime snapshot} of instances -- one moment of the synchronization scenario at which a conflict is detected (requirements section 6.2, the ``exists, hash differs'' case). The local instance \texttt{localFile} (version 44, computed on the client) and the server-side \texttt{remoteFile} (version 45) share the same name and \texttt{id}, but differ in \texttt{sha256} -- the signature of edits made on both sides. The \texttt{cl1 : ChangeLogEntry} record confirms that version 45 is newer than the \texttt{lastSyncedVersion = 42} stored in the client's cursor, i.e. the server-side change happened after the last successful sync.
+Unlike class diagrams, which describe the structure of types, an object diagram (fig.~\ref{fig:object}) captures a \emph{concrete runtime snapshot} of instances -- one moment inside \texttt{SyncViewModel.reconcile()} at which a locally modified file is about to be re-uploaded. The persisted \texttt{state1 : SyncState} holds \texttt{lastSyncedVersion = 42} and a known entry for \texttt{Notes.java} (\texttt{remoteID = 8241}, the \texttt{size}/\texttt{sha256} recorded the last time this client synced it). \texttt{FolderScanner} produces a fresh \texttt{local : LocalFileEntry} for the same file whose \texttt{size}/\texttt{sha256} no longer match the known entry, so \texttt{SyncViewModel} decides to delete remote file 8241 and re-upload it as a new row (there is no update-in-place endpoint). As the note on the diagram makes explicit, this is a \emph{race}, not a detected conflict: if \texttt{remoteFile} had also changed server-side since version 42, the very next \texttt{POST /api/sync/diff} call would independently report a \texttt{download} action for it, and neither side would ever learn the other had changed too.
 
 \emph{Notation note:} Mermaid has no built-in object diagram type, so the instances were built using \texttt{flowchart}: each object's header is labeled per the UML convention as \underline{instance\_name~:~Class}, with concrete attribute values listed below a separator.
 
-\diagramland{img/en/12-object-conflict.pdf}{Object diagram: state snapshot during an editing conflict}{0.9}{fig:object}
+\diagramland{img/en/12-object-conflict.pdf}{Object diagram: sync-state snapshot just before a locally modified file is re-uploaded}{0.9}{fig:object}
 
 % ---------------------------------------------------------------------
 \subsection{Interaction Diagrams (Sequence \& Communication Diagrams)}
@@ -167,35 +172,35 @@ Three sequence diagrams are presented, illustrating key interaction scenarios be
 
 \subsubsection*{Authentication}
 
-Fig.~\ref{fig:seq-login} shows the sequence of verifying user credentials and issuing a token pair (access/refresh), consistent with the authentication description in the requirements (sections 1, 5.2).
+Fig.~\ref{fig:seq-login} shows the sequence of verifying user credentials (by \texttt{username}, not email) and issuing a token pair (access/refresh) as two independently signed, stateless JWTs -- there is no server-side session row to create or look up.
 
 \diagramland{img/en/05-seq-login.pdf}{Sequence diagram: user authentication}{0.95}{fig:seq-login}
 
 \subsubsection*{File Upload}
 
-Fig.~\ref{fig:seq-upload} illustrates the path of a request from the client through the handler layer to the service layer, which first writes the file content to storage (\texttt{FileStorage}), and after the write is confirmed, writes the file metadata to PostgreSQL via \texttt{FileRepository}.
+Fig.~\ref{fig:seq-upload} illustrates the path of a request from the client through the handler layer to the service layer, which first writes the file content to storage (\texttt{FileStorage}), and after the write is confirmed, writes the file metadata to PostgreSQL via \texttt{FileRepo}, retrying with an auto-generated ``\texttt{name (n).ext}'' if the name collides with one the same user already has. A note on the diagram points to the chunked-upload variant of the same path, used for large files.
 
 \diagramland{img/en/06-seq-upload.pdf}{Sequence diagram: uploading a file to the server}{0.95}{fig:seq-upload}
 
-\subsubsection*{Synchronization and Conflict Resolution}
+\subsubsection*{Synchronization}
 
-Fig.~\ref{fig:seq-sync} details the \texttt{POST /api/sync/diff} protocol (section 6.6 of the requirements): the client sends the local manifest and \texttt{lastSyncedVersion}, the server returns a list of actions for each file, and conflicting files are handled through a request for the user's choice (keep local / keep remote / keep both).
+Fig.~\ref{fig:seq-sync} details the actual \texttt{POST /api/sync/diff} round trip: the client sends only \texttt{lastSyncedVersion} (no manifest is read server-side), the server returns \texttt{download}/\texttt{delete\_local} actions plus a \texttt{newVersion}, the client applies those, and then -- independently, with no server involvement in deciding -- scans its local folder and uploads, re-uploads, or deletes files based on its own locally persisted \texttt{SyncState}. As the note on the diagram states, there is no conflict branch: a same-file change on both sides between two cycles is resolved by whichever half of this routine happens to run first.
 
-\diagramland{img/en/07-seq-sync.pdf}{Sequence diagram: synchronization and conflict resolution}{0.98}{fig:seq-sync}
+\diagramland{img/en/07-seq-sync.pdf}{Sequence diagram: synchronization (server diff + client-side reconcile)}{0.98}{fig:seq-sync}
 
 \subsubsection*{The Same Scenario as a Communication Diagram}
 
-Fig.~\ref{fig:comm-sync} depicts \textbf{the same} synchronization and conflict-resolution scenario as fig.~\ref{fig:seq-sync}, but in communication-diagram notation: the emphasis shifts from the time axis to the static links between objects, and message ordering is conveyed through numbering (with decimal nesting for messages inside conditional branches -- e.g. \texttt{5.1--5.3} for the user interaction in the conflict case). Both diagrams are consistent with each other -- they use the same objects and messages -- and together demonstrate the two standard ways of depicting one interaction.
+Fig.~\ref{fig:comm-sync} depicts \textbf{the same} synchronization scenario as fig.~\ref{fig:seq-sync}, but in communication-diagram notation: the emphasis shifts from the time axis to the static links between objects, and message ordering is conveyed through numbering. Both diagrams are consistent with each other -- they use the same objects and messages -- and together demonstrate the two standard ways of depicting one interaction.
 
 \emph{Notation note:} Mermaid has no built-in communication diagram type, so it was built using \texttt{flowchart}: objects are graph nodes, and the numbered edge labels correspond to messages.
 
-\diagramland{img/en/11-comm-sync.pdf}{Communication diagram: synchronization and conflict resolution}{0.95}{fig:comm-sync}
+\diagramland{img/en/11-comm-sync.pdf}{Communication diagram: synchronization (server diff + client-side reconcile)}{0.95}{fig:comm-sync}
 
 % ---------------------------------------------------------------------
 \subsection{State Diagram}
 % ---------------------------------------------------------------------
 
-Fig.~\ref{fig:state} describes the behavior of the \emph{File} entity depending on its synchronization state: from local/remote creation, through transfer (\texttt{Uploading}/\texttt{Downloading}), to the synchronized state, possible local or remote changes, and, in case of a simultaneous change on both sides, a conflict resolved by the user. The diagram directly implements the four manifest-comparison cases from section 6.2 of the requirements (upload / download / no-op / conflict) together with handling deletions via the version cursor (section 6.3).
+Fig.~\ref{fig:state} describes the behavior of a file depending on its synchronization state, from the client's point of view: from local/remote creation, through transfer (\texttt{Uploading}/\texttt{Downloading}), to \texttt{Synced}, possible local or remote changes (which loop back into a re-upload or a download), and deletion on either side (a remote deletion arrives as a \texttt{delete\_local} diff action; a local deletion is detected by the file's known entry going missing from a folder scan). As the note on the diagram states, there is deliberately no \texttt{Conflict} state: a simultaneous change on both sides is a race resolved by last-writer-wins, not a modeled transition.
 
 \diagramland{img/en/08-state-file.pdf}{State diagram of a file during synchronization}{0.85}{fig:state}
 
@@ -203,7 +208,7 @@ Fig.~\ref{fig:state} describes the behavior of the \emph{File} entity depending 
 \subsection{Component Diagram}
 % ---------------------------------------------------------------------
 
-Fig.~\ref{fig:component} details the software components of the system and their dependencies: the client applications, the \texttt{cloudflared} tunnel, and, inside the Go API server, the \texttt{Handler} $\to$ \texttt{Service} $\to$ \texttt{Repository} layers, together with the implementation-independent \texttt{FileStorage} interface, which allows swapping local storage for S3-compatible storage without changing the business logic (sections 5.2, 5.5 of the requirements).
+Fig.~\ref{fig:component} details the software components of the system and their dependencies: the client applications, the \texttt{cloudflared} tunnel (which routes by path to either the \texttt{api} or the \texttt{web} container), the \texttt{web} nginx component serving the built React SPA, and, inside the Go API server, the \texttt{Handler} $\to$ \texttt{Service} $\to$ \texttt{Repository} layers, together with the implementation-independent \texttt{FileStorage} interface, whose only current implementation is local-disk storage (sections 5.2, 5.5 of the requirements).
 
 \diagram{img/en/09-component.pdf}{Component diagram of the system}{0.9}{fig:component}
 
@@ -211,7 +216,7 @@ Fig.~\ref{fig:component} details the software components of the system and their
 \subsection{Package Diagram}
 % ---------------------------------------------------------------------
 
-Where the component diagram (fig.~\ref{fig:component}) shows runtime components and the interfaces between them, the package diagram (fig.~\ref{fig:package}) shows the \emph{static} organization of the code into modules, following the planned repository layout (\texttt{backend}, \texttt{frontend}, \texttt{desktop}, \texttt{migrations}): inside the Go module, a layered package structure \texttt{handler} $\to$ \texttt{service} $\to$ \texttt{repo}/\texttt{storage}, matching the ``no direct filesystem calls from handlers'' convention and the principle of accessing storage only through the \texttt{FileStorage} interface. The \texttt{repo} package additionally depends on the schema defined in \texttt{migrations}.
+Where the component diagram (fig.~\ref{fig:component}) shows runtime components and the interfaces between them, the package diagram (fig.~\ref{fig:package}) shows the \emph{static} organization of the code into modules, matching the actual repository layout (\texttt{backend}, \texttt{frontend}, \texttt{desktop}, \texttt{migrations}): inside the Go module, a layered package structure \texttt{handler} $\to$ \texttt{service} $\to$ \texttt{repo}/\texttt{storage}, built on shared support packages (\texttt{domain}, \texttt{db}, \texttt{config}, \texttt{authctx}), matching the ``no direct filesystem calls from handlers'' convention and the principle of accessing storage only through the \texttt{FileStorage} interface. The \texttt{repo} package additionally depends on the schema defined in \texttt{migrations}. The desktop package groups SwiftUI views separately from the sync engine (\texttt{DirectoryWatcher}, \texttt{SyncViewModel}, and \texttt{Manifest.swift}'s \texttt{SyncState}/\texttt{FolderScanner}) and the shared \texttt{APIClient}/\texttt{KeychainStore}, and the frontend package now also depends on TanStack Virtual for windowing the file table alongside TanStack Query and Table.
 
 \emph{Notation note:} Mermaid has no built-in package diagram type, so packages are shown as nested \texttt{subgraph} blocks (with a \texttt{«package»} stereotype in the title), and dependencies as dashed arrows labeled with the dependency action.
 
@@ -221,7 +226,7 @@ Where the component diagram (fig.~\ref{fig:component}) shows runtime components 
 \subsection{Activity Diagram}
 % ---------------------------------------------------------------------
 
-Fig.~\ref{fig:activity} details the business logic of a single synchronization cycle: computing the local manifest, sending it to the server, determining the action for each file (upload/download/no-op/conflict/delete\_local), executing the action or, in the event of a conflict, obtaining the user's decision (keep local / keep remote / keep both), and finally saving the new sync cursor version (section 6 of the requirements).
+Fig.~\ref{fig:activity} details the business logic of a single reconcile cycle, triggered either by an \texttt{FSEvents} change notification or a 45-second poll: listing remote files and requesting the server-authoritative diff since \texttt{lastSyncedVersion}, applying each \texttt{download}/\texttt{delete\_local} action and saving the new version, then scanning the local folder and, independently of the server, uploading new files, deleting-and-re-uploading changed files, and deleting server-side copies of files removed locally, before persisting the updated sync state to disk.
 
 \diagram{img/en/04-activity-sync.pdf}{Activity diagram: synchronization cycle}{0.98}{fig:activity}
 
@@ -229,6 +234,6 @@ Fig.~\ref{fig:activity} details the business logic of a single synchronization c
 \section{Conclusions}
 % =====================================================================
 
-The developed set of diagrams consistently reveals the Remote File Folder Client system from business requirements to detailed structure and behavior: the use case diagram captures the user's functional scenarios; the general class diagram and the deployment diagram define the architectural framework; the VOPC diagram, the object diagram, the sequence and communication diagrams, and the state, component, package, and activity diagrams detail the implementation of the most complex scenario -- synchronizing files between the local and remote folder, including the manifest-comparison protocol and editing-conflict resolution. In particular, the object diagram and the communication diagram complement the VOPC diagram and the sequence diagrams, respectively, with a concrete state snapshot and an alternative (structural rather than time-based) notation for the same scenario, while the package diagram captures the static modular organization of the code, consistent with the planned repository layout. The constructed diagrams are mutually consistent (shared classes, entities, and actions) and serve as a foundation for the further development and testing of the system.
+The developed set of diagrams consistently reveals the Remote File Folder Client system from business requirements to detailed structure and behavior, as it is actually implemented rather than as originally sketched: the use case diagram captures the user's functional scenarios, including registration; the general class diagram and the (now four-container) deployment diagram define the architectural framework; the VOPC diagram, the object diagram, the sequence and communication diagrams, and the state, component, package, and activity diagrams detail the implementation of the most complex scenario -- synchronizing files between the local and remote folder. That scenario turned out simpler than originally scoped: the server exposes a one-way, version-cursor diff (\texttt{download}/\texttt{delete\_local} only), and the desktop client reconciles its own local changes independently, with no manifest-based conflict detection or resolution UI -- a deliberate, documented trade-off rather than a missing feature. In particular, the object diagram and the communication diagram complement the VOPC diagram and the sequence diagrams, respectively, with a concrete state snapshot (a re-upload race, not a resolved conflict) and an alternative (structural rather than time-based) notation for the same scenario, while the package diagram captures the static modular organization of the code, consistent with the actual repository layout. The constructed diagrams are mutually consistent (shared classes, entities, and actions) and serve as an accurate foundation for the further development and testing of the system.
 
 \end{document}

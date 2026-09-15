@@ -5,18 +5,27 @@ sequenceDiagram
     participant H as FileHandler<br/>(Go API)
     participant FS as FileService
     participant ST as FileStorage
-    participant REP as FileRepository
+    participant REP as FileRepo
     participant DB as PostgreSQL
 
     U->>C: Обрати файл і натиснути «Вивантажити»
     C->>H: POST /api/files (multipart)
-    H->>FS: upload(fileStream, meta)
+    H->>FS: Create(uploadedBy, filename, reader)
     FS->>ST: Save(key, reader)
     ST-->>FS: OK
-    FS->>REP: save(File{name, size, sha256, uploadedBy})
+    FS->>REP: Create(File{name, storageKey,<br/>extension, size, uploadedBy})
     REP->>DB: INSERT INTO files (...)
-    DB-->>REP: file id
+    alt ім'я вже зайняте цим користувачем
+        DB-->>REP: unique_violation (files_uploaded_by_name_key)
+        REP-->>FS: помилка
+        FS->>FS: повторити зі "name (n).ext"
+        FS->>REP: Create(File{name: з унікальним суфіксом, ...})
+        REP->>DB: INSERT INTO files (...)
+    end
+    DB-->>REP: рядок файлу (id, version)
     REP-->>FS: File
     FS-->>H: File
     H-->>C: 201 Created { file }
     C-->>U: Показати новий файл у таблиці
+
+    note over C,H: Великі файли натомість використовують chunked-сесію<br/>(POST /api/files/uploads → N × PUT .../chunks/{i}<br/>→ POST .../complete), яка збирає байти на сервері<br/>й викликає той самий Create.

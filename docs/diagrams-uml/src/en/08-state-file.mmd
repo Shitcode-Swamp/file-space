@@ -1,24 +1,29 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 stateDiagram-v2
-    [*] --> LocalOnly : file created locally
-    [*] --> NotDownloaded : file uploaded<br/>from another client
+    [*] --> LocalNew : file created locally,<br/>no known entry yet
+    [*] --> RemoteNew : diff reports<br/>action = download
 
-    LocalOnly --> Uploading : upload started
-    Uploading --> Synced : upload succeeded
+    LocalNew --> Uploading : reconcile: no remote<br/>file with that name
+    Uploading --> Synced : POST /api/files succeeded,<br/>known entry recorded
 
-    NotDownloaded --> Downloading : download started
-    Downloading --> Synced : download succeeded
+    RemoteNew --> Downloading : reconcile: action = download
+    Downloading --> Synced : content written locally,<br/>known entry recorded
 
-    Synced --> ModifiedLocally : FSEvents: local change
-    Synced --> ModifiedRemotely : diff: server version increased
+    Synced --> LocallyModified : local size/sha256<br/>differs from known entry
+    Synced --> RemotelyChanged : diff: version increased<br/>(download / delete_local)
 
-    ModifiedLocally --> Uploading : next sync<br/>(remote version unchanged)
-    ModifiedRemotely --> Downloading : next sync<br/>(local version unchanged)
+    LocallyModified --> Uploading : delete old remote copy,<br/>re-upload as new file
+    RemotelyChanged --> Downloading : action = download
+    RemotelyChanged --> RemoteDeleted : action = delete_local
+    RemoteDeleted --> [*] : local copy removed
 
-    ModifiedLocally --> Conflict : both sides<br/>changed simultaneously
-    ModifiedRemotely --> Conflict : both sides<br/>changed simultaneously
+    Synced --> LocallyDeleted : file removed<br/>from local folder
+    LocallyDeleted --> [*] : DELETE /api/files/{id},<br/>known entry dropped
 
-    Conflict --> Synced : user chose<br/>keep local / remote / both
-
-    Synced --> Deleted : file deletion
-    Deleted --> [*]
+    note right of LocallyModified
+        No explicit Conflict state exists: if a file
+        changes on both sides between two reconciles,
+        whichever half of the routine runs first wins
+        (last-writer-wins). This is a documented
+        limitation, not a modeling omission.
+    end note

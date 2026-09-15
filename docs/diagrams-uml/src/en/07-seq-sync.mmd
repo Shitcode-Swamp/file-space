@@ -1,33 +1,43 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 sequenceDiagram
     actor U as User
-    participant W as FSEvents<br/>(watcher, Swift)
-    participant SC as SyncController<br/>(Swift client)
+    participant W as DirectoryWatcher<br/>(FSEvents, Swift)
+    participant SC as SyncViewModel<br/>(Swift client)
     participant H as SyncHandler<br/>(Go API)
-    participant SS as SyncDiffService
-    participant REP as FileRepository
+    participant SS as SyncService
+    participant REP as FileRepo
     participant DB as PostgreSQL
 
-    W->>SC: local folder change event
-    SC->>SC: compute manifest<br/>{name, size, mtime, sha256}
-    SC->>H: POST /api/sync/diff<br/>{manifest, lastSyncedVersion}
-    H->>SS: computeDiff(manifest, lastSyncedVersion)
-    SS->>REP: findChangedSince(lastSyncedVersion)
-    REP->>DB: SELECT files, change_log
-    DB-->>REP: rows
-    REP-->>SS: list of files and versions
-    SS->>SS: compare hash/versions,<br/>determine action for file
-    SS-->>H: { newVersion, actions[] }
-    H-->>SC: 200 OK { newVersion, actions[] }
+    W->>SC: local folder change event<br/>(debounced 1.5s) / 45s poll timer
+    SC->>SC: GET /api/files (list remote)
+    SC->>H: POST /api/sync/diff<br/>{lastSyncedVersion}
+    H->>SS: Diff(uploadedBy, sinceVersion)
+    SS->>REP: ListChangedSince(uploadedBy, sinceVersion)
+    REP->>DB: SELECT files, file_deletions<br/>WHERE version > sinceVersion
+    DB-->>REP: changed rows, deleted rows, currentVersion
+    REP-->>SS: files[], deletions[], currentVersion
+    SS-->>H: actions[] (download | delete_local), newVersion
+    H-->>SC: 200 OK { actions[], newVersion }
 
     loop for each action
-        alt action == upload/download/delete_local/noop
-            SC->>SC: execute action locally
-        else action == conflict
-            SC->>U: show conflict dialog
-            U-->>SC: Keep local / Keep remote / Keep both
-            SC->>SC: apply user's choice
+        alt action == download
+            SC->>SC: fetch content, write to<br/>local folder, record entry
+        else action == delete_local
+            SC->>SC: remove local file, drop entry
         end
     end
+    SC->>SC: lastSyncedVersion := newVersion
 
-    SC->>SC: save newVersion as lastSyncedVersion
+    SC->>SC: scan local folder<br/>(name, size, sha256)
+    loop for each local file vs. known entries
+        alt new file, no remote match
+            SC->>H: POST /api/files (upload)
+        else known file, content changed
+            SC->>H: DELETE /api/files/{id}<br/>POST /api/files (re-upload)
+        else known entry, file missing locally
+            SC->>H: DELETE /api/files/{id}
+        end
+    end
+    SC->>SC: persist sync state to disk
+
+    note over SC,U: If the same file changes on both sides between<br/>two reconciles, whichever half of this routine<br/>runs first wins — there is no server-side manifest<br/>comparison, so no true conflict is detected or<br/>surfaced to the user.

@@ -4,33 +4,37 @@ flowchart TB
         A1["«artifact»<br/>React SPA"]
     end
 
-    subgraph N2["«device» macOS<br/>(десктоп)"]
+    subgraph N2["«device» macOS<br/>(desktop)"]
         A2["«artifact»<br/>Swift-застосунок<br/>+ Keychain"]
     end
 
-    subgraph N3["«node» Cloudflare Edge"]
+    subgraph N3["«node» Периферія Cloudflare"]
         A3["«service»<br/>Термінація TLS,<br/>публічний DNS"]
     end
 
-    subgraph N4["«node» Ubuntu Home Server<br/>(Docker Compose)"]
+    subgraph N4["«node» Домашній Ubuntu-сервер<br/>(Docker Compose)"]
         direction TB
-        subgraph C1["«execution environment»<br/>container: cloudflared"]
-            A4["cloudflared tunnel"]
+        subgraph C1["«execution environment»<br/>контейнер: cloudflared"]
+            A4["тунель cloudflared<br/>(маршрутизація за шляхом)"]
         end
-        subgraph C2["«execution environment»<br/>container: api"]
-            A5["«artifact»<br/>Go API binary"]
+        subgraph C2["«execution environment»<br/>контейнер: api"]
+            A5["«artifact»<br/>Go API бінарник"]
         end
-        subgraph C3["«execution environment»<br/>container: db"]
+        subgraph C4["«execution environment»<br/>контейнер: web"]
+            A7["«artifact»<br/>nginx + статична<br/>збірка React"]
+        end
+        subgraph C3["«execution environment»<br/>контейнер: db"]
             A6["«artifact»<br/>PostgreSQL 16"]
         end
-        V1[("volume: pgdata")]
-        V2[("bind mount:<br/>./storage")]
+        V1[("том: pgdata")]
+        V2[("bind mount:<br/>../storage")]
         C3 --- V1
         C2 --- V2
     end
 
     N1 -- "HTTPS" --> N3
     N2 -- "HTTPS" --> N3
-    N3 -- "outbound tunnel" --> C1
-    C1 -- "localhost" --> C2
+    N3 -- "вихідний тунель" --> C1
+    C1 -- "localhost, шлях /api/*" --> C2
+    C1 -- "localhost, інші шляхи" --> C4
     C2 -- "TCP/5432" --> C3

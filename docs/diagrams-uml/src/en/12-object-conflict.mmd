@@ -1,21 +1,23 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 flowchart TB
-    cursor["<b><u>cursor1 : SyncCursor</u></b><br/>─────────────<br/>lastSyncedVersion = 42"]
+    state["<b><u>state1 : SyncState</u></b><br/>─────────────<br/>folderPath = &quot;/Users/y/Notes&quot;<br/>lastSyncedVersion = 42"]
 
-    manifest["<b><u>m1 : ManifestEntry</u></b><br/>─────────────<br/>name = &quot;Notes.java&quot;<br/>size = 1240<br/>mtime = 2026-09-11T14:02:00<br/>sha256 = &quot;9e1a...c4&quot;"]
+    knownEntry["<b><u>entries[&quot;Notes.java&quot;] : SyncedFileEntry</u></b><br/>─────────────<br/>remoteID = 8241<br/>size = 1240<br/>mtime = 1757595720<br/>sha256 = &quot;9e1a...c4&quot;"]
 
-    localFile["<b><u>localFile : File</u></b><br/>─────────────<br/>id = f-8f21<br/>name = &quot;Notes.java&quot;<br/>size = 1240<br/>version = 44<br/>sha256 = &quot;9e1a...c4&quot;"]
+    localEntry["<b><u>local : LocalFileEntry</u></b><br/>─────────────<br/>size = 1305<br/>mtime = 1757600000<br/>sha256 = &quot;7c3d...11&quot;"]
 
-    remoteFile["<b><u>remoteFile : File</u></b><br/>─────────────<br/>id = f-8f21<br/>name = &quot;Notes.java&quot;<br/>size = 1305<br/>version = 45<br/>sha256 = &quot;7c3d...11&quot;"]
+    remoteFile["<b><u>remoteFile : File</u></b><br/>─────────────<br/>id = 8241<br/>name = &quot;Notes.java&quot;<br/>size = 1240<br/>version = 42"]
 
-    changeLog["<b><u>cl1 : ChangeLogEntry</u></b><br/>─────────────<br/>fileId = f-8f21<br/>changeType = &quot;edit&quot;<br/>version = 45"]
+    scanner["<b><u>fsc1 : FolderScanner</u></b>"]
 
-    diff["<b><u>ss1 : SyncDiffService</u></b>"]
+    viewModel["<b><u>sc1 : SyncViewModel</u></b>"]
 
-    manifest -- "describes current<br/>local state" --> localFile
-    diff -- "compares" --> manifest
-    diff -- "against version" --> remoteFile
-    diff -- "reads" --> cursor
-    changeLog -- "version 45 &gt;<br/>lastSyncedVersion 42" --> cursor
-    diff -- "sha256 differs →<br/>action = conflict" --> localFile
-    diff -.->|"action = conflict"| remoteFile
+    state -- "entries" --> knownEntry
+    scanner -- "scan() produces" --> localEntry
+    viewModel -- "reads" --> state
+    viewModel -- "compares local vs. known<br/>(size/sha256 differ)" --> localEntry
+    viewModel -- "against" --> knownEntry
+    viewModel -.->|"decision: delete remote 8241,<br/>re-upload as a new file"| remoteFile
+
+    note1["Note: this is a race, not a detected conflict —<br/>if the server copy also changed since version 42,<br/>SyncService.Diff would independently report a<br/>download action for it on the very next call.<br/>There is no manifest comparison on the server, so<br/>neither side ever learns the other changed too."]
+    viewModel -.- note1

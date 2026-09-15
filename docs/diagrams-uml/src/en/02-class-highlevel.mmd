@@ -1,43 +1,51 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 classDiagram
     class User {
-        +UUID id
-        +string email
+        +int64 id
+        +string username
         +string passwordHash
-        +datetime createdAt
-        +authenticate(password) bool
-    }
-
-    class Session {
-        +string accessToken
-        +string refreshToken
-        +datetime expiresAt
-        +isValid() bool
     }
 
     class File {
-        +UUID id
+        +int64 id
         +string name
-        +int size
+        +string storageKey
+        +string extension
+        +int64 size
         +datetime createdAt
         +datetime modifiedAt
-        +string sha256
-        +int version
-        +getExtension() string
+        +int64 uploadedBy
+        +int64 editedBy
+        +int64 version
+    }
+
+    class Deletion {
+        +int64 fileId
+        +string name
+        +string storageKey
+        +int64 version
+        +datetime deletedAt
     }
 
     class FileService {
-        +listFiles(sort, filter) File[]
-        +upload(file) File
-        +download(id) Reader
-        +delete(id) void
+        +List(params) File[]
+        +Get(uploadedBy, id) File
+        +Content(uploadedBy, id) File, Reader
+        +Download(uploadedBy, id) File, Reader
+        +Create(uploadedBy, filename, reader) File
+        +Delete(uploadedBy, id) void
+        +InitiateUpload(uploadedBy, filename, size) uploadId
+        +UploadChunk(uploadId, index, reader) void
+        +CompleteUpload(uploadId) File
     }
 
-    class FileRepository {
-        +findAll(sort, filter) File[]
-        +findById(id) File
-        +save(file) File
-        +delete(id) void
+    class FileRepo {
+        <<interface>>
+        +List(params) File[], hasMore
+        +GetByID(uploadedBy, id) File
+        +Create(file) File
+        +Delete(uploadedBy, id) void
+        +ListChangedSince(uploadedBy, sinceVersion) File[], Deletion[], version
     }
 
     class FileStorage {
@@ -48,45 +56,24 @@ classDiagram
     }
 
     class LocalFileStorage {
-        +basePath string
-    }
-
-    class S3Storage {
-        +bucket string
-        +endpoint string
+        +root string
     }
 
     class AuthService {
-        +login(email, password) Session
-        +register(email, password) User
-        +refresh(token) Session
+        +Register(username, password) User
+        +Login(username, password) accessToken, refreshToken
+        +Refresh(refreshToken) accessToken
     }
 
-    class SyncDiffService {
-        +computeDiff(manifest, lastSyncedVersion) SyncResult
-    }
-
-    class ManifestEntry {
-        +string name
-        +int size
-        +datetime mtime
-        +string sha256
-    }
-
-    class ChangeLogEntry {
-        +UUID fileId
-        +string changeType
-        +int version
+    class SyncService {
+        +Diff(uploadedBy, sinceVersion) SyncAction[], newVersion
     }
 
     User "1" --> "0..*" File : uploadedBy / editedBy
-    User "1" --> "0..*" Session : has
-    FileService --> FileRepository : uses
+    FileService --> FileRepo : uses
     FileService --> FileStorage : uses
     AuthService --> User : manages
     LocalFileStorage ..|> FileStorage : implements
-    S3Storage ..|> FileStorage : implements
-    SyncDiffService --> FileRepository : uses
-    SyncDiffService --> ChangeLogEntry : reads
-    SyncDiffService --> ManifestEntry : compares
-    FileRepository --> File : persists
+    SyncService --> FileRepo : uses (ListChangedSince)
+    FileRepo --> File : persists
+    FileRepo --> Deletion : persists

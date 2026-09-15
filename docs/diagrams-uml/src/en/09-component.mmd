@@ -1,29 +1,31 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}, 'flowchart': {'subGraphTitleMargin': {'top': 10, 'bottom': 15}}}}%%
 flowchart TB
-    WebC["«component»<br/>React Web Client"]
+    WebC["«component»<br/>React Web Client<br/>(browser)"]
     SwiftC["«component»<br/>Swift Desktop Client"]
 
-    subgraph EDGE["Ubuntu Home Server"]
+    subgraph EDGE["Ubuntu Home Server (Docker Compose)"]
         direction TB
         CFT["«component»<br/>cloudflared<br/>(Cloudflare Tunnel)"]
+        Web["«component»<br/>web: nginx<br/>(static SPA build)"]
 
-        subgraph API["«component» Go API Server"]
+        subgraph API["«component» api: Go API Server"]
             direction TB
-            Handler["«component»<br/>Handler layer<br/>(chi router)"]
+            Handler["«component»<br/>Handler layer<br/>(chi router, JWT middleware)"]
             Service["«component»<br/>Service layer<br/>(business logic)"]
-            Repo["«component»<br/>Repository layer<br/>(sqlc/sqlx)"]
+            Repo["«component»<br/>Repository layer<br/>(pgx/sqlx)"]
             IFileStorage(["FileStorage<br/>interface"])
             Handler --> Service
             Service --> Repo
             Service --> IFileStorage
         end
 
-        PG[("«component»<br/>PostgreSQL<br/>users, files, change_log")]
-        Storage[("«component»<br/>File Storage<br/>(local disk / S3-compatible)")]
+        PG[("«component»<br/>PostgreSQL<br/>users, files, file_deletions")]
+        Storage[("«component»<br/>Local File Storage<br/>(bind-mounted directory)")]
     end
 
     WebC -- "HTTPS / JSON REST" --> CFT
     SwiftC -- "HTTPS / JSON REST" --> CFT
-    CFT --> Handler
+    CFT -- "path: /api/*" --> Handler
+    CFT -- "path: everything else" --> Web
     Repo -- "SQL" --> PG
     Storage -. "implements" .-> IFileStorage

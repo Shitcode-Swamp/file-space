@@ -5,18 +5,27 @@ sequenceDiagram
     participant H as FileHandler<br/>(Go API)
     participant FS as FileService
     participant ST as FileStorage
-    participant REP as FileRepository
+    participant REP as FileRepo
     participant DB as PostgreSQL
 
     U->>C: Choose file and click «Upload»
     C->>H: POST /api/files (multipart)
-    H->>FS: upload(fileStream, meta)
+    H->>FS: Create(uploadedBy, filename, reader)
     FS->>ST: Save(key, reader)
     ST-->>FS: OK
-    FS->>REP: save(File{name, size, sha256, uploadedBy})
+    FS->>REP: Create(File{name, storageKey,<br/>extension, size, uploadedBy})
     REP->>DB: INSERT INTO files (...)
-    DB-->>REP: file id
+    alt name already taken by this user
+        DB-->>REP: unique_violation (files_uploaded_by_name_key)
+        REP-->>FS: error
+        FS->>FS: retry with "name (n).ext"
+        FS->>REP: Create(File{name: deduped, ...})
+        REP->>DB: INSERT INTO files (...)
+    end
+    DB-->>REP: file row (id, version)
     REP-->>FS: File
     FS-->>H: File
     H-->>C: 201 Created { file }
     C-->>U: Show new file in the table
+
+    note over C,H: Large uploads instead use the chunked session<br/>(POST /api/files/uploads → N × PUT .../chunks/{i}<br/>→ POST .../complete), which reassembles the<br/>bytes server-side and calls this same Create.

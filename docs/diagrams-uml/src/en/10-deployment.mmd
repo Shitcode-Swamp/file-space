@@ -15,16 +15,19 @@ flowchart TB
     subgraph N4["«node» Ubuntu Home Server<br/>(Docker Compose)"]
         direction TB
         subgraph C1["«execution environment»<br/>container: cloudflared"]
-            A4["cloudflared tunnel"]
+            A4["cloudflared tunnel<br/>(routes by path)"]
         end
         subgraph C2["«execution environment»<br/>container: api"]
             A5["«artifact»<br/>Go API binary"]
+        end
+        subgraph C4["«execution environment»<br/>container: web"]
+            A7["«artifact»<br/>nginx + React<br/>static build"]
         end
         subgraph C3["«execution environment»<br/>container: db"]
             A6["«artifact»<br/>PostgreSQL 16"]
         end
         V1[("volume: pgdata")]
-        V2[("bind mount:<br/>./storage")]
+        V2[("bind mount:<br/>../storage")]
         C3 --- V1
         C2 --- V2
     end
@@ -32,5 +35,6 @@ flowchart TB
     N1 -- "HTTPS" --> N3
     N2 -- "HTTPS" --> N3
     N3 -- "outbound tunnel" --> C1
-    C1 -- "localhost" --> C2
+    C1 -- "localhost, path /api/*" --> C2
+    C1 -- "localhost, other paths" --> C4
     C2 -- "TCP/5432" --> C3

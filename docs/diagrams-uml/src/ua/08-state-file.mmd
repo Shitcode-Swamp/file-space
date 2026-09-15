@@ -1,24 +1,30 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 stateDiagram-v2
-    [*] --> LocalOnly : файл створено локально
-    [*] --> NotDownloaded : файл вивантажено<br/>з іншого клієнта
+    [*] --> LocalNew : файл створено локально,<br/>відомої позиції ще немає
+    [*] --> RemoteNew : diff повідомляє<br/>action = download
 
-    LocalOnly --> Uploading : розпочато вивантаження
-    Uploading --> Synced : вивантаження успішне
+    LocalNew --> Uploading : reconcile: немає віддаленого<br/>файлу з такою назвою
+    Uploading --> Synced : POST /api/files успішний,<br/>відома позиція збережена
 
-    NotDownloaded --> Downloading : розпочато завантаження
-    Downloading --> Synced : завантаження успішне
+    RemoteNew --> Downloading : reconcile: action = download
+    Downloading --> Synced : вміст записано локально,<br/>відома позиція збережена
 
-    Synced --> ModifiedLocally : FSEvents: локальна зміна
-    Synced --> ModifiedRemotely : diff: версія на сервері зросла
+    Synced --> LocallyModified : локальні size/sha256<br/>відрізняються від відомої позиції
+    Synced --> RemotelyChanged : diff: версія зросла<br/>(download / delete_local)
 
-    ModifiedLocally --> Uploading : наступна синхронізація<br/>(віддалена версія не змінювалась)
-    ModifiedRemotely --> Downloading : наступна синхронізація<br/>(локальна версія не змінювалась)
+    LocallyModified --> Uploading : видалити стару копію на сервері,<br/>вивантажити як новий файл
+    RemotelyChanged --> Downloading : action = download
+    RemotelyChanged --> RemoteDeleted : action = delete_local
+    RemoteDeleted --> [*] : локальну копію видалено
 
-    ModifiedLocally --> Conflict : обидві сторони<br/>змінились одночасно
-    ModifiedRemotely --> Conflict : обидві сторони<br/>змінились одночасно
+    Synced --> LocallyDeleted : файл видалено<br/>з локальної теки
+    LocallyDeleted --> [*] : DELETE /api/files/{id},<br/>відому позицію прибрано
 
-    Conflict --> Synced : користувач обрав<br/>keep local / remote / both
-
-    Synced --> Deleted : видалення файлу
-    Deleted --> [*]
+    note right of LocallyModified
+        Явного стану Conflict немає: якщо файл
+        змінюється з обох боків між двома циклами
+        синхронізації, перемагає та половина
+        процедури, яка виконається першою
+        (last-writer-wins). Це задокументоване
+        обмеження, а не прогалина в моделюванні.
+    end note

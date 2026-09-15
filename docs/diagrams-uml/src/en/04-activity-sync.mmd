@@ -1,31 +1,28 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '18px'}, 'flowchart': {'nodeSpacing': 18, 'rankSpacing': 24, 'padding': 6}}}%%
 flowchart TD
-    Start(["Start"]) --> A1["Compute local manifest<br/>{name, size, mtime, sha256}"]
-    A1 --> A2["Send POST /api/sync/diff<br/>(manifest + lastSyncedVersion)"]
-    A2 --> A3["Server: compare manifest<br/>with files table and change log"]
-    A3 --> D1{"For each file:<br/>type of discrepancy?"}
+    Start(["Start<br/>(FSEvents change or 45s poll)"]) --> A1["List remote files<br/>GET /api/files"]
+    A1 --> A2["Send POST /api/sync/diff<br/>{lastSyncedVersion}"]
+    A2 --> A3["Server: ListChangedSince(uploadedBy,<br/>lastSyncedVersion)"]
+    A3 --> D1{"For each returned<br/>action"}
 
-    D1 -->|"exists locally, not remotely"| B1["Action: upload"]
-    D1 -->|"not local, exists remotely"| B2["Action: download"]
-    D1 -->|"hash matches"| B3["Action: no-op"]
-    D1 -->|"both changed"| B4["Action: conflict"]
-    D1 -->|"deleted on server"| B5["Action: delete_local"]
+    D1 -->|"download"| B1["Fetch content,<br/>write to local folder,<br/>record known entry"]
+    D1 -->|"delete_local"| B2["Remove local file,<br/>drop known entry"]
+    B1 --> C1["Save lastSyncedVersion<br/>= newVersion"]
+    B2 --> C1
 
-    B1 --> C["Execute action on client"]
-    B2 --> C
-    B3 --> C
-    B5 --> C
+    C1 --> A4["Scan local folder<br/>(name, size, sha256 per file)"]
+    A4 --> D2{"For each local file"}
 
-    B4 --> E["Show user<br/>conflict dialog"]
-    E --> D2{"User choice"}
-    D2 -->|"Keep local"| F1["Overwrite<br/>remote version"]
-    D2 -->|"Keep remote"| F2["Overwrite<br/>local version"]
-    D2 -->|"Keep both"| F3["Rename copy<br/>(conflict copy)"]
-    F1 --> C
-    F2 --> C
-    F3 --> C
+    D2 -->|"known, size/hash changed"| E1["Delete old remote copy,<br/>re-upload as new file"]
+    D2 -->|"not known, no remote<br/>file with that name"| E2["Upload as new file"]
+    D2 -->|"known, unchanged"| E3["No-op"]
 
-    C --> D3{"More files<br/>to process?"}
-    D3 -->|"yes"| D1
-    D3 -->|"no"| A4["Save newVersion<br/>as lastSyncedVersion"]
-    A4 --> End(["End"])
+    E1 --> F["Update known entry"]
+    E2 --> F
+    E3 --> F
+
+    F --> D3{"Any known entry whose<br/>name is missing locally<br/>(and not just unreadable)?"}
+    D3 -->|"yes"| G1["Delete remote copy,<br/>drop known entry"]
+    D3 -->|"no"| H["Persist sync state to disk"]
+    G1 --> H
+    H --> End(["End"])

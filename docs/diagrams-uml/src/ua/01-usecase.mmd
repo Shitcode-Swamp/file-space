@@ -4,6 +4,7 @@ flowchart LR
 
     subgraph SYS["Система «Remote File Folder Client»"]
         direction TB
+        UC0(["Зареєструватися"])
         UC1(["Автентифікуватися"])
         UC2(["Переглянути список<br/>файлів і їх атрибути"])
         UC3(["Вивантажити файл<br/>на сервер"])
@@ -13,12 +14,12 @@ flowchart LR
         UC6a(["Відобразити вихідний<br/>код (.java)"])
         UC6b(["Відобразити<br/>зображення (.png)"])
         UC7(["Керувати видимістю<br/>стовпців таблиці"])
-        UC8(["Сортувати файли<br/>за editedBy"])
-        UC9(["Фільтрувати файли<br/>за типом"])
+        UC8(["Сортувати файли за стовпцем<br/>(ім'я, дати, автор, редактор)"])
+        UC9(["Фільтрувати файли<br/>за розширенням"])
         UC10(["Синхронізувати локальну<br/>теку з віддаленою"])
-        UC11(["Розв'язати конфлікт<br/>синхронізації"])
     end
 
+    User --- UC0
     User --- UC1
     User --- UC2
     User --- UC3
@@ -37,9 +38,8 @@ flowchart LR
     UC10 -.->|"«include»"| UC1
     UC6a -.->|"«extend»"| UC6
     UC6b -.->|"«extend»"| UC6
-    UC11 -.->|"«extend»"| UC10
 
     classDef actor fill:#eef2ff,stroke:#3b3b8f,stroke-width:1px;
     classDef uc fill:#ffffff,stroke:#333,stroke-width:1px;
     class User actor;
-    class UC1,UC2,UC3,UC4,UC5,UC6,UC6a,UC6b,UC7,UC8,UC9,UC10,UC11 uc;
+    class UC0,UC1,UC2,UC3,UC4,UC5,UC6,UC6a,UC6b,UC7,UC8,UC9,UC10 uc;

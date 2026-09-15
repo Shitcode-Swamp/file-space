@@ -1,28 +1,27 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 flowchart TB
-    U(("User"))
-    W["w : FSEvents<br/>(watcher, Swift)"]
-    SC["sc : SyncController<br/>(Swift client)"]
+    W["w : DirectoryWatcher<br/>(FSEvents, Swift)"]
+    SC["sc : SyncViewModel<br/>(Swift client)"]
     H["h : SyncHandler<br/>(Go API)"]
-    SS["ss : SyncDiffService"]
-    REP["rep : FileRepository"]
+    SS["ss : SyncService"]
+    REP["rep : FileRepo"]
     DB[("db : PostgreSQL")]
-    CD["cd : ConflictDialogUI"]
-    EXEC(["execute action<br/>locally"])
-    CURSOR(["lastSyncedVersion<br/>:= newVersion"])
+    FSC["fsc : FolderScanner"]
+    APPLY(["apply download /<br/>delete_local locally"])
+    RECONCILE(["upload / re-upload /<br/>delete based on local scan"])
+    STATE(["lastSyncedVersion,<br/>entries := updated"])
 
     W -->|"1: local folder<br/>change event"| SC
-    SC -->|"2: POST /api/sync/diff(...)"| H
-    H -->|"2.1: computeDiff(...)"| SS
-    SS -->|"2.1.1: findChangedSince(...)"| REP
-    REP -->|"2.1.1.1: SELECT files,<br/>change_log"| DB
+    SC -->|"2: POST /api/sync/diff<br/>{lastSyncedVersion}"| H
+    H -->|"2.1: Diff(uploadedBy,<br/>sinceVersion)"| SS
+    SS -->|"2.1.1: ListChangedSince(...)"| REP
+    REP -->|"2.1.1.1: SELECT files,<br/>file_deletions"| DB
     DB -->|"2.1.1.2: rows"| REP
-    REP -->|"2.1.2: files, versions"| SS
-    SS -->|"2.2: { actions[] }"| H
-    H -->|"3: 200 OK { actions[] }"| SC
-    SC -->|"4: [action != conflict]"| EXEC
-    SC -->|"5: [action == conflict]"| CD
-    CD -->|"5.1: askUserResolution()"| U
-    U -->|"5.2: keep local /<br/>remote / both"| CD
-    CD -->|"5.3: decision"| SC
-    SC -->|"6: save newVersion"| CURSOR
+    REP -->|"2.1.2: files, deletions,<br/>currentVersion"| SS
+    SS -->|"2.2: { actions[], newVersion }"| H
+    H -->|"3: 200 OK { actions[], newVersion }"| SC
+    SC -->|"4: for each action"| APPLY
+    SC -->|"5: scan(folderPath)"| FSC
+    FSC -->|"5.1: local entries"| SC
+    SC -->|"6: compare vs. known entries"| RECONCILE
+    SC -->|"7: persist"| STATE

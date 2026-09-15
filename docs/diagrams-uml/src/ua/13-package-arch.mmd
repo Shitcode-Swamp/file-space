@@ -2,17 +2,18 @@
 flowchart TB
     subgraph FE["«package» frontend (React + TS)"]
         direction TB
-        FEUi["ui / components<br/>(файлова таблиця, перегляд)"]
-        FEState["api client<br/>(TanStack Query, TanStack Table)"]
+        FEUi["ui / компоненти<br/>(App, columns, FilePreviewModal,<br/>SettingsModal, auth/LoginPage)"]
+        FEState["api-клієнт<br/>(TanStack Query, TanStack Table,<br/>TanStack Virtual)"]
     end
 
     subgraph DE["«package» desktop (Swift)"]
         direction TB
-        DEUi["SwiftUI views"]
-        DESync["SyncEngine<br/>(FSEvents, sync cursor)"]
+        DEUi["SwiftUI-екрани<br/>(MainView, LoginView,<br/>SyncPanelView, FilePreviewView)"]
+        DESync["Синхронізація<br/>(DirectoryWatcher, SyncViewModel,<br/>Manifest.swift: SyncState/FolderScanner)"]
+        DEApi["APIClient + KeychainStore"]
     end
 
-    subgraph BE["«package» backend (Go module)"]
+    subgraph BE["«package» backend (Go-модуль)"]
         direction TB
         subgraph BEHandler["«package» handler<br/>(cmd/api, internal/handler)"]
         end
@@ -22,14 +23,22 @@ flowchart TB
         end
         subgraph BEStorage["«package» storage<br/>(internal/storage, FileStorage)"]
         end
+        subgraph BESupport["«package» domain, db, config,<br/>authctx (internal/*)"]
+        end
         BEHandler -. "викликає" .-> BEService
         BEService -. "викликає" .-> BERepo
         BEService -. "викликає" .-> BEStorage
+        BEHandler -. "використовує" .-> BESupport
+        BEService -. "використовує" .-> BESupport
+        BERepo -. "використовує" .-> BESupport
     end
 
     subgraph MIG["«package» migrations<br/>(golang-migrate SQL)"]
     end
 
+    DEApi --> DEUi
+    DEApi --> DESync
+
     FEState -. "HTTPS / JSON REST" .-> BEHandler
-    DESync -. "HTTPS / JSON REST" .-> BEHandler
-    BERepo -. "визначає схему за" .-> MIG
+    DEApi -. "HTTPS / JSON REST" .-> BEHandler
+    BERepo -. "схема визначена в" .-> MIG

@@ -1,72 +1,74 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 classDiagram
-    class FolderWatcherUI {
+    class SyncPanelView {
+        <<boundary>>
+        +chooseFolder()
+        +start()
+        +stop()
+    }
+
+    class DirectoryWatcher {
         <<boundary>>
         +onLocalChangeDetected()
     }
 
-    class SyncNowButtonUI {
-        <<boundary>>
-    }
-
-    class ConflictDialogUI {
-        <<boundary>>
-        +askUserResolution(file) Resolution
-    }
-
-    class SyncController {
+    class SyncViewModel {
         <<control>>
-        +runSyncCycle()
-        +buildLocalManifest() ManifestEntry[]
+        +reconcile()
+        +scheduleReconcile()
     }
 
-    class SyncDiffService {
+    class SyncHandler {
         <<control>>
-        +computeDiff(manifest, lastSyncedVersion) SyncResult
+        +diff(request) response
     }
 
-    class ConflictResolver {
+    class SyncService {
         <<control>>
-        +resolve(file, resolution)
+        +Diff(uploadedBy, sinceVersion) actions, newVersion
     }
 
-    class ManifestEntry {
+    class FolderScanner {
+        <<control>>
+        +scan(folderPath) ScanResult
+    }
+
+    class SyncState {
         <<entity>>
-        +string name
-        +int size
-        +datetime mtime
+        +string folderPath
+        +int64 lastSyncedVersion
+        +Map~name,SyncedFileEntry~ entries
+    }
+
+    class SyncedFileEntry {
+        <<entity>>
+        +int64 remoteID
+        +int64 size
+        +double mtime
         +string sha256
-    }
-
-    class SyncCursor {
-        <<entity>>
-        +int lastSyncedVersion
     }
 
     class File {
         <<entity>>
-        +UUID id
+        +int64 id
         +string name
-        +string sha256
-        +int version
+        +int64 version
     }
 
-    class ChangeLogEntry {
+    class Deletion {
         <<entity>>
-        +UUID fileId
-        +string changeType
-        +int version
+        +int64 fileId
+        +string name
+        +int64 version
     }
 
-    FolderWatcherUI --> SyncController : подія FSEvents
-    SyncNowButtonUI --> SyncController : ручний запуск
-    SyncController --> ManifestEntry : формує
-    SyncController --> SyncCursor : читає lastSyncedVersion
-    SyncController --> SyncDiffService : POST /api/sync/diff
-    SyncDiffService --> File : порівнює з
-    SyncDiffService --> ChangeLogEntry : читає зміни з
-    SyncDiffService --> ManifestEntry : отримує від клієнта
-    SyncController --> ConflictResolver : дія = conflict
-    ConflictResolver --> ConflictDialogUI : показує вибір
-    ConflictResolver --> File : keep local / remote / both
-    SyncController --> SyncCursor : оновлює newVersion
+    DirectoryWatcher --> SyncViewModel : подія локальної<br/>зміни (з дебаунсом)
+    SyncViewModel --> SyncState : читає/записує<br/>lastSyncedVersion, entries
+    SyncViewModel --> SyncHandler : POST /api/sync/diff<br/>{lastSyncedVersion}
+    SyncHandler --> SyncService : Diff(uploadedBy, sinceVersion)
+    SyncService --> File : ListChangedSince
+    SyncService --> Deletion : ListChangedSince
+    SyncViewModel --> FolderScanner : сканує локальну теку
+    FolderScanner --> SyncedFileEntry : формує
+    SyncViewModel --> SyncedFileEntry : порівнює локальний стан<br/>із відомим (size/sha256),<br/>щоб вирішити upload /<br/>re-upload / delete
+    SyncPanelView --> SyncViewModel : start / stop / chooseFolder

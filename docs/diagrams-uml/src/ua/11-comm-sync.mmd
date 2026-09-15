@@ -1,28 +1,27 @@
 %%{init: {'theme': 'neutral', 'themeVariables': {'fontSize': '15px'}}}%%
 flowchart TB
-    U(("Користувач"))
-    W["w : FSEvents<br/>(watcher, Swift)"]
-    SC["sc : SyncController<br/>(Swift-клієнт)"]
+    W["w : DirectoryWatcher<br/>(FSEvents, Swift)"]
+    SC["sc : SyncViewModel<br/>(Swift-клієнт)"]
     H["h : SyncHandler<br/>(Go API)"]
-    SS["ss : SyncDiffService"]
-    REP["rep : FileRepository"]
+    SS["ss : SyncService"]
+    REP["rep : FileRepo"]
     DB[("db : PostgreSQL")]
-    CD["cd : ConflictDialogUI"]
-    EXEC(["виконати дію<br/>локально"])
-    CURSOR(["lastSyncedVersion<br/>:= newVersion"])
+    FSC["fsc : FolderScanner"]
+    APPLY(["застосувати download /<br/>delete_local локально"])
+    RECONCILE(["upload / re-upload /<br/>delete за локальним скануванням"])
+    STATE(["lastSyncedVersion,<br/>entries := оновлено"])
 
-    W -->|"1: подія зміни теки"| SC
-    SC -->|"2: POST /api/sync/diff(...)"| H
-    H -->|"2.1: computeDiff(...)"| SS
-    SS -->|"2.1.1: findChangedSince(...)"| REP
-    REP -->|"2.1.1.1: SELECT files,<br/>change_log"| DB
-    DB -->|"2.1.1.2: rows"| REP
-    REP -->|"2.1.2: файли, версії"| SS
-    SS -->|"2.2: { actions[] }"| H
-    H -->|"3: 200 OK { actions[] }"| SC
-    SC -->|"4: [action != conflict]"| EXEC
-    SC -->|"5: [action == conflict]"| CD
-    CD -->|"5.1: askUserResolution()"| U
-    U -->|"5.2: keep local /<br/>remote / both"| CD
-    CD -->|"5.3: рішення"| SC
-    SC -->|"6: зберегти newVersion"| CURSOR
+    W -->|"1: подія зміни<br/>локальної теки"| SC
+    SC -->|"2: POST /api/sync/diff<br/>{lastSyncedVersion}"| H
+    H -->|"2.1: Diff(uploadedBy,<br/>sinceVersion)"| SS
+    SS -->|"2.1.1: ListChangedSince(...)"| REP
+    REP -->|"2.1.1.1: SELECT files,<br/>file_deletions"| DB
+    DB -->|"2.1.1.2: рядки"| REP
+    REP -->|"2.1.2: files, deletions,<br/>currentVersion"| SS
+    SS -->|"2.2: { actions[], newVersion }"| H
+    H -->|"3: 200 OK { actions[], newVersion }"| SC
+    SC -->|"4: для кожної дії"| APPLY
+    SC -->|"5: scan(folderPath)"| FSC
+    FSC -->|"5.1: локальні позиції"| SC
+    SC -->|"6: порівняти з відомими позиціями"| RECONCILE
+    SC -->|"7: зберегти"| STATE
