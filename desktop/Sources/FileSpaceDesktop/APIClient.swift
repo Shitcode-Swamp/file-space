@@ -43,12 +43,22 @@ final class APIClient: APIClientProtocol, Sendable {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private let singleShotUploadThreshold: Int64
 
     /// `session` is injectable so tests can pass a URLSession configured
     /// with a stub URLProtocol instead of hitting real network.
-    init(baseURL: URL = APIClient.defaultBaseURL, session: URLSession = URLSession(configuration: .default)) {
+    /// `singleShotUploadThreshold` is injectable so tests can force small
+    /// fixture files through the chunked-upload path (by passing 0) to
+    /// exercise it directly, rather than needing multi-megabyte test files
+    /// to naturally clear the real default -- see uploadFile(fileURL:onProgress:).
+    init(
+        baseURL: URL = APIClient.defaultBaseURL,
+        session: URLSession = URLSession(configuration: .default),
+        singleShotUploadThreshold: Int64 = 8 << 20
+    ) {
         self.baseURL = baseURL
         self.session = session
+        self.singleShotUploadThreshold = singleShotUploadThreshold
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
@@ -138,11 +148,17 @@ final class APIClient: APIClientProtocol, Sendable {
 
     // MARK: - Files
 
-    /// Unfiltered/unsorted — the desktop UI fetches the full (small,
-    /// personal-drive-sized) list once and filters/sorts client-side, unlike
-    /// the web client's server-driven query params. See FilesViewModel.
+    /// Unfiltered/unsorted, and requests the server's max page size in one
+    /// call — the desktop UI fetches the full (small, personal-drive-sized)
+    /// list once and filters/sorts client-side, unlike the web client's
+    /// paginated, server-driven query params. See FilesViewModel. If a
+    /// user's file count ever exceeds this, listFiles silently truncates to
+    /// the first 1000 (by whatever order the backend defaults to); the web
+    /// client's infinite scroll is the path built to handle unbounded counts.
     func listFiles() async throws -> [FileRecord] {
-        let (data, _) = try await send(URLRequest(url: url("api/files")))
+        var components = URLComponents(url: url("api/files"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "limit", value: "1000")]
+        let (data, _) = try await send(URLRequest(url: components.url!))
         return try decoder.decode([FileRecord].self, from: data)
     }
 
@@ -156,15 +172,105 @@ final class APIClient: APIClientProtocol, Sendable {
         return (data, Self.parseFilename(from: http.value(forHTTPHeaderField: "Content-Disposition")))
     }
 
+    /// Uploads without progress reporting — used by background sync, where
+    /// there's no UI to show it to. Delegates to the chunked path below so
+    /// sync uploads get the same per-request size cap as everything else.
     func uploadFile(fileURL: URL) async throws -> FileRecord {
+        try await uploadFile(fileURL: fileURL, onProgress: { _, _ in })
+    }
+
+    /// Files at or below this size upload via the original single-shot
+    /// Uploads fileURL in chunks (see backend/internal/service/uploads.go),
+    /// invoking onProgress(bytesSent, totalBytes) after each chunk finishes.
+    /// Chunking (rather than one large multipart POST, the old approach)
+    /// matters in production: file-space sits behind a Cloudflare Tunnel
+    /// (REQUIREMENTS.md §5.6), whose edge rejects large single-request
+    /// bodies outright — every request this sends is at most one chunk,
+    /// regardless of the file's total size.
+    ///
+    /// Files at or below singleShotUploadThreshold skip this session
+    /// protocol entirely and go through uploadSingleShot instead (1 round
+    /// trip vs. this path's minimum of 3: initiate + chunk + complete) --
+    /// a file that already fits in a single chunk was never at risk of the
+    /// Cloudflare body-size limit chunking exists for, so paying the extra
+    /// round trips for it is pure overhead. That overhead is very visible
+    /// for folder sync specifically: it re-uploads a changed file on every
+    /// save, so this is the difference between a source-file edit
+    /// resyncing in ~1 extra round trip vs. ~3.
+    func uploadFile(fileURL: URL, onProgress: @escaping @MainActor @Sendable (Int64, Int64) -> Void) async throws -> FileRecord {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        let totalSize = try handle.seekToEnd()
+        try handle.seek(toOffset: 0)
+
+        if totalSize <= singleShotUploadThreshold {
+            let data = try handle.readToEnd() ?? Data()
+            try handle.close()
+            let created = try await uploadSingleShot(filename: fileURL.lastPathComponent, data: data)
+            await onProgress(Int64(totalSize), Int64(totalSize))
+            return created
+        }
+        defer { try? handle.close() }
+
+        let initiateRequest = try jsonRequest(
+            "api/files/uploads", method: "POST",
+            body: InitiateUploadRequest(filename: fileURL.lastPathComponent, size: Int64(totalSize))
+        )
+        let (initiateData, _) = try await send(initiateRequest)
+        let session = try decoder.decode(InitiateUploadResponse.self, from: initiateData)
+
+        do {
+            var sent: Int64 = 0
+            var index = 0
+            while let chunk = try handle.read(upToCount: Int(session.chunkSize)), !chunk.isEmpty {
+                var chunkRequest = URLRequest(url: url("api/files/uploads/\(session.uploadId)/chunks/\(index)"))
+                chunkRequest.httpMethod = "PUT"
+                chunkRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                chunkRequest.httpBody = chunk
+                _ = try await send(chunkRequest)
+
+                sent += Int64(chunk.count)
+                index += 1
+                await onProgress(sent, Int64(totalSize))
+            }
+
+            var completeRequest = URLRequest(url: url("api/files/uploads/\(session.uploadId)/complete"))
+            completeRequest.httpMethod = "POST"
+            let (completeData, _) = try await send(completeRequest)
+            return try decoder.decode(FileRecord.self, from: completeData)
+        } catch {
+            // Best-effort: free the server-side scratch file/session now
+            // rather than waiting for its idle timeout. Doesn't change what
+            // gets thrown -- the upload already failed for its own reason.
+            var abortRequest = URLRequest(url: url("api/files/uploads/\(session.uploadId)"))
+            abortRequest.httpMethod = "DELETE"
+            _ = try? await send(abortRequest)
+            throw error
+        }
+    }
+
+    /// The original single-shot upload path (POST /api/files,
+    /// multipart/form-data) -- one round trip, used for files small enough
+    /// that the chunked-upload session protocol would be pure overhead. See
+    /// singleShotUploadThreshold.
+    private func uploadSingleShot(filename: String, data: Data) async throws -> FileRecord {
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url("api/files"))
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try Self.multipartBody(fileURL: fileURL, boundary: boundary)
+        request.httpBody = Self.multipartBody(filename: filename, fileData: data, boundary: boundary)
 
-        let (data, _) = try await send(request)
-        return try decoder.decode(FileRecord.self, from: data)
+        let (responseData, _) = try await send(request)
+        return try decoder.decode(FileRecord.self, from: responseData)
+    }
+
+    private static func multipartBody(filename: String, fileData: Data, boundary: String) -> Data {
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        body.append(fileData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        return body
     }
 
     func deleteFile(id: Int64) async throws {
@@ -186,31 +292,32 @@ final class APIClient: APIClientProtocol, Sendable {
     private struct Credentials: Encodable { let username: String; let password: String }
     private struct RefreshRequest: Encodable { let refreshToken: String }
     private struct SyncDiffRequest: Encodable { let lastSyncedVersion: Int64 }
-
-    private static func multipartBody(fileURL: URL, boundary: String) throws -> Data {
-        let fileData = try Data(contentsOf: fileURL)
-        let filename = fileURL.lastPathComponent
-
-        var body = Data()
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
-        body.append(fileData)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-        return body
-    }
+    private struct InitiateUploadRequest: Encodable { let filename: String; let size: Int64 }
+    private struct InitiateUploadResponse: Decodable { let uploadId: String; let chunkSize: Int64 }
 
     private static func parseFilename(from contentDisposition: String?) -> String? {
         guard let header = contentDisposition else { return nil }
-        for part in header.split(separator: ";") {
-            let trimmed = part.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("filename=") {
-                var value = trimmed.dropFirst("filename=".count)
-                if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
-                    value = value.dropFirst().dropLast()
-                }
-                return String(value)
+        let parts = header.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+
+        // Prefer the RFC 6266 filename* form: it's percent-encoded UTF-8, so
+        // it round-trips non-ASCII names (e.g. Ukrainian) that the server
+        // also sends as an ASCII-sanitized plain filename="..." fallback.
+        for part in parts where part.hasPrefix("filename*=") {
+            var value = part.dropFirst("filename*=".count)
+            if value.hasPrefix("UTF-8''") {
+                value = value.dropFirst("UTF-8''".count)
             }
+            if let decoded = String(value).removingPercentEncoding {
+                return decoded
+            }
+        }
+
+        for part in parts where part.hasPrefix("filename=") {
+            var value = part.dropFirst("filename=".count)
+            if value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2 {
+                value = value.dropFirst().dropLast()
+            }
+            return String(value)
         }
         return nil
     }

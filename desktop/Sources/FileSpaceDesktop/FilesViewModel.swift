@@ -26,6 +26,35 @@ enum SortDirection {
     }
 }
 
+/// The columns MainView's table header lets the user click to sort by
+/// (REQUIREMENTS.md §4 "Sorting" only requires "Edited by", but the same
+/// click-to-sort UI applies uniformly to every column here, mirroring the
+/// web client's TanStack Table sorting).
+enum FileSortColumn: CaseIterable {
+    case name, createdAt, modifiedAt, uploadedBy, editedBy
+
+    var title: String {
+        switch self {
+        case .name: return "Name"
+        case .createdAt: return "Created"
+        case .modifiedAt: return "Modified"
+        case .uploadedBy: return "Uploaded by"
+        case .editedBy: return "Edited by"
+        }
+    }
+}
+
+struct UploadProgress: Identifiable {
+    var id: String { name }
+    let name: String
+    let sent: Int64
+    let total: Int64
+
+    var fraction: Double {
+        total > 0 ? Double(sent) / Double(total) : 1
+    }
+}
+
 enum PreviewSupport {
     static let extensions: Set<String> = ["java", "png"]
     static func isPreviewable(_ extensionName: String) -> Bool {
@@ -44,18 +73,58 @@ final class FilesViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var extensionFilter: String?
-    @Published var editedBySortOrder: SortDirection = .none
+    // Name, ascending, is the default sort (REQUIREMENTS.md §4); clicking a
+    // column header in MainView calls toggleSort(_:), which either cycles
+    // the active column's direction or switches to the clicked column at
+    // ascending.
+    @Published var sortColumn: FileSortColumn = .name
+    @Published var sortDirection: SortDirection = .ascending
+    // One entry per file in the upload currently in flight, in the same
+    // order as the fileURLs passed to upload(fileURLs:) — updated as each
+    // chunk finishes uploading. Empty when no upload is in progress.
+    @Published private(set) var uploadProgress: [UploadProgress] = []
 
     private let api: APIClient
     private let onUnauthorized: @MainActor () -> Void
+    private var pollTask: Task<Void, Never>?
 
     init(api: APIClient, onUnauthorized: @escaping @MainActor () -> Void) {
         self.api = api
         self.onUnauthorized = onUnauthorized
     }
 
+    /// Refreshes the file list periodically in the background, so changes
+    /// made elsewhere (the web client, another device, folder sync
+    /// uploading/downloading files) show up without the user needing to
+    /// click Refresh. Mirrors SyncViewModel's own poll loop; MainView starts
+    /// this alongside the initial refresh and stops it on logout.
+    func startAutoRefresh() {
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                await self.refresh()
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
     var availableExtensions: [String] {
         Array(Set(allFiles.map(\.extensionName))).sorted()
+    }
+
+    func toggleSort(_ column: FileSortColumn) {
+        if sortColumn == column {
+            sortDirection.cycle()
+        } else {
+            sortColumn = column
+            sortDirection = .ascending
+        }
     }
 
     var displayedFiles: [FileRecord] {
@@ -63,15 +132,26 @@ final class FilesViewModel: ObservableObject {
         if let extensionFilter {
             result = result.filter { $0.extensionName == extensionFilter }
         }
-        switch editedBySortOrder {
-        case .none:
-            break
-        case .ascending:
-            result.sort { $0.editedBy.localizedCaseInsensitiveCompare($1.editedBy) == .orderedAscending }
-        case .descending:
-            result.sort { $0.editedBy.localizedCaseInsensitiveCompare($1.editedBy) == .orderedDescending }
+        guard sortDirection != .none else { return result }
+        let ascending = sortDirection == .ascending
+        switch sortColumn {
+        case .name:
+            result.sort { compare($0.name, $1.name, ascending: ascending) }
+        case .createdAt:
+            result.sort { ascending ? $0.createdAt < $1.createdAt : $0.createdAt > $1.createdAt }
+        case .modifiedAt:
+            result.sort { ascending ? $0.modifiedAt < $1.modifiedAt : $0.modifiedAt > $1.modifiedAt }
+        case .uploadedBy:
+            result.sort { compare($0.uploadedBy, $1.uploadedBy, ascending: ascending) }
+        case .editedBy:
+            result.sort { compare($0.editedBy, $1.editedBy, ascending: ascending) }
         }
         return result
+    }
+
+    private func compare(_ a: String, _ b: String, ascending: Bool) -> Bool {
+        let order: ComparisonResult = ascending ? .orderedAscending : .orderedDescending
+        return a.localizedCaseInsensitiveCompare(b) == order
     }
 
     func refresh() async {
@@ -87,15 +167,34 @@ final class FilesViewModel: ObservableObject {
         }
     }
 
-    func upload(fileURL: URL) async {
+    /// Uploads each file in turn (sequentially, not in parallel — keeps
+    /// behavior predictable and doesn't hammer the server with a burst of
+    /// concurrent uploads), each split into chunks by APIClient so
+    /// uploadProgress reflects real progress and large files never ride in
+    /// one huge request. A failure on one file doesn't abort the rest;
+    /// failures are collected and reported together once every file has
+    /// been attempted.
+    func upload(fileURLs: [URL]) async {
         errorMessage = nil
-        do {
-            _ = try await api.uploadFile(fileURL: fileURL)
-            await refresh()
-        } catch let error as APIError where error.isUnauthorized {
-            onUnauthorized()
-        } catch {
-            errorMessage = error.localizedDescription
+        var failures: [String] = []
+        uploadProgress = fileURLs.map { UploadProgress(name: $0.lastPathComponent, sent: 0, total: 0) }
+        for (index, url) in fileURLs.enumerated() {
+            do {
+                _ = try await api.uploadFile(fileURL: url) { [weak self] sent, total in
+                    self?.uploadProgress[index] = UploadProgress(name: url.lastPathComponent, sent: sent, total: total)
+                }
+            } catch let error as APIError where error.isUnauthorized {
+                uploadProgress = []
+                onUnauthorized()
+                return
+            } catch {
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        uploadProgress = []
+        await refresh()
+        if !failures.isEmpty {
+            errorMessage = "Some uploads failed — \(failures.joined(separator: "; "))"
         }
     }
 

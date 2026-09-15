@@ -133,7 +133,11 @@ final class SyncViewModel: ObservableObject {
             }
             state.lastSyncedVersion = diff.newVersion
 
-            let localEntries = FolderScanner.scan(folderPath: folderPath)
+            let scanResult = try FolderScanner.scan(folderPath: folderPath)
+            let localEntries = scanResult.entries
+            if !scanResult.unreadableNames.isEmpty {
+                appendLog("Skipping \(scanResult.unreadableNames.count) unreadable file(s), left untouched: \(scanResult.unreadableNames.sorted().joined(separator: ", "))")
+            }
 
             for (name, local) in localEntries {
                 if let known = state.entries[name] {
@@ -151,7 +155,14 @@ final class SyncViewModel: ObservableObject {
                 }
             }
 
-            let removedLocally = state.entries.keys.filter { localEntries[$0] == nil }
+            // A name only counts as "removed locally" (and so gets deleted
+            // remotely) if it's genuinely absent from the folder -- a file
+            // that's merely unreadable this cycle (locked, an un-downloaded
+            // iCloud placeholder, a permissions hiccup) is left alone rather
+            // than treated as a deletion. See FolderScanner.ScanResult.
+            let removedLocally = state.entries.keys.filter {
+                localEntries[$0] == nil && !scanResult.unreadableNames.contains($0)
+            }
             for name in removedLocally {
                 guard let known = state.entries[name] else { continue }
                 try? await api.deleteFile(id: known.remoteID)

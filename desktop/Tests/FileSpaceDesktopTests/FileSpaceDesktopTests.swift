@@ -76,12 +76,50 @@ final class FolderScannerTests: XCTestCase {
         try "hidden".write(to: dir.appendingPathComponent(".hidden.txt"), atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: dir.appendingPathComponent("subdir"), withIntermediateDirectories: true)
 
-        let entries = FolderScanner.scan(folderPath: dir.path)
+        let result = try FolderScanner.scan(folderPath: dir.path)
 
-        XCTAssertEqual(entries.count, 1)
-        XCTAssertNotNil(entries["visible.txt"])
-        XCTAssertNil(entries[".hidden.txt"])
-        XCTAssertNil(entries["subdir"])
+        XCTAssertEqual(result.entries.count, 1)
+        XCTAssertNotNil(result.entries["visible.txt"])
+        XCTAssertNil(result.entries[".hidden.txt"])
+        XCTAssertNil(result.entries["subdir"])
+        XCTAssertTrue(result.unreadableNames.isEmpty)
+    }
+
+    // Pins the bug this was written to fix: a folder that can't be listed
+    // at all (doesn't exist, no permission, ...) must throw rather than
+    // silently look like "an empty, all-files-deleted folder" -- the latter
+    // is exactly what caused SyncViewModel.reconcile() to delete files
+    // remotely just because a scan failed to read them locally.
+    func testScanThrowsWhenFolderCannotBeListed() {
+        let missingDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        XCTAssertThrowsError(try FolderScanner.scan(folderPath: missingDir.path))
+    }
+
+    // A file that exists (and *is* a regular file) but can't be read -- e.g.
+    // its permission bits deny it, simulated here directly rather than
+    // relying on any particular sandboxing/TCC behavior -- must be reported
+    // as unreadable, not silently dropped as if it were absent.
+    // SyncViewModel relies on exactly this distinction to avoid mistaking
+    // "couldn't read it" for "the user deleted it" (which used to make it
+    // delete the file's *remote* copy for no reason).
+    func testScanReportsUnreadableFilesSeparatelyFromMissingOnes() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dir.appendingPathComponent("locked.txt").path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        let locked = dir.appendingPathComponent("locked.txt")
+        try "secret".write(to: locked, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        try "hello".write(to: dir.appendingPathComponent("visible.txt"), atomically: true, encoding: .utf8)
+
+        let result = try FolderScanner.scan(folderPath: dir.path)
+
+        XCTAssertNotNil(result.entries["visible.txt"])
+        XCTAssertNil(result.entries["locked.txt"])
+        XCTAssertTrue(result.unreadableNames.contains("locked.txt"))
     }
 }
 

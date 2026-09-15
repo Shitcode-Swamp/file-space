@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ColumnKind: CaseIterable {
     case createdAt, modifiedAt, uploadedBy, editedBy
@@ -26,6 +27,7 @@ struct MainView: View {
     @State private var visibleColumns: Set<ColumnKind> = Set(ColumnKind.allCases)
     @State private var fileToDelete: FileRecord?
     @State private var previewFile: FileRecord?
+    @State private var isDropTargeted = false
 
     init(appState: AppState) {
         self.appState = appState
@@ -39,6 +41,9 @@ struct MainView: View {
             header
             Divider()
             toolbar
+            if !filesVM.uploadProgress.isEmpty {
+                uploadProgressView
+            }
             if let error = filesVM.errorMessage {
                 Text(error).foregroundStyle(.red).font(.callout).padding(.horizontal)
             }
@@ -46,7 +51,18 @@ struct MainView: View {
             Divider()
             SyncPanelView(viewModel: syncVM)
         }
-        .task { await filesVM.refresh() }
+        .task {
+            await filesVM.refresh()
+            filesVM.startAutoRefresh()
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers)
+        }
+        .overlay {
+            if isDropTargeted {
+                dropOverlay
+            }
+        }
         .alert(
             "Delete file?",
             isPresented: Binding(get: { fileToDelete != nil }, set: { if !$0 { fileToDelete = nil } }),
@@ -71,6 +87,7 @@ struct MainView: View {
             Text("Logged in as \(appState.username ?? "")").foregroundStyle(.secondary)
             Button("Log out") {
                 syncVM.stop()
+                filesVM.stopAutoRefresh()
                 appState.logout()
             }
         }
@@ -91,12 +108,6 @@ struct MainView: View {
             .frame(width: 160)
             .labelsHidden()
 
-            Button {
-                filesVM.editedBySortOrder.cycle()
-            } label: {
-                Text("Edited by \(filesVM.editedBySortOrder.symbol)")
-            }
-
             Menu("Columns") {
                 ForEach(ColumnKind.allCases, id: \.self) { column in
                     Toggle(column.title, isOn: Binding(
@@ -115,6 +126,27 @@ struct MainView: View {
         .padding(.vertical, 8)
     }
 
+    private var uploadProgressView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(filesVM.uploadProgress) { progress in
+                HStack {
+                    Text(progress.name)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(width: 200, alignment: .leading)
+                    ProgressView(value: progress.fraction)
+                    Text("\(Int(progress.fraction * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+            }
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
     // A hand-rolled column layout rather than SwiftUI's Table type: Table's
     // column-builder generics don't infer cleanly through conditional
     // (if visibleColumns.contains(...)) columns, whereas a plain List row
@@ -123,20 +155,32 @@ struct MainView: View {
     private let columnWidth: CGFloat = 140
     private let actionsWidth: CGFloat = 160
 
+    private func sortHeaderButton(_ column: FileSortColumn, width: CGFloat) -> some View {
+        let isActive = filesVM.sortColumn == column
+        let symbol = isActive ? filesVM.sortDirection.symbol : SortDirection.none.symbol
+        return Button {
+            filesVM.toggleSort(column)
+        } label: {
+            Text("\(column.title) \(symbol)").bold()
+        }
+        .buttonStyle(.plain)
+        .frame(width: width, alignment: .leading)
+    }
+
     private var tableHeader: some View {
         HStack(spacing: 12) {
-            Text("Name").bold().frame(width: nameWidth, alignment: .leading)
+            sortHeaderButton(.name, width: nameWidth)
             if visibleColumns.contains(.createdAt) {
-                Text("Created").bold().frame(width: columnWidth, alignment: .leading)
+                sortHeaderButton(.createdAt, width: columnWidth)
             }
             if visibleColumns.contains(.modifiedAt) {
-                Text("Modified").bold().frame(width: columnWidth, alignment: .leading)
+                sortHeaderButton(.modifiedAt, width: columnWidth)
             }
             if visibleColumns.contains(.uploadedBy) {
-                Text("Uploaded by").bold().frame(width: columnWidth, alignment: .leading)
+                sortHeaderButton(.uploadedBy, width: columnWidth)
             }
             if visibleColumns.contains(.editedBy) {
-                Text("Edited by").bold().frame(width: columnWidth, alignment: .leading)
+                sortHeaderButton(.editedBy, width: columnWidth)
             }
             Text("Actions").bold().frame(width: actionsWidth, alignment: .leading)
             Spacer(minLength: 0)
@@ -157,11 +201,11 @@ struct MainView: View {
             .frame(width: nameWidth, alignment: .leading)
 
             if visibleColumns.contains(.createdAt) {
-                Text(file.createdAt.formatted(date: .abbreviated, time: .shortened))
+                Text(fileTimestampFormatter.string(from: file.createdAt))
                     .frame(width: columnWidth, alignment: .leading)
             }
             if visibleColumns.contains(.modifiedAt) {
-                Text(file.modifiedAt.formatted(date: .abbreviated, time: .shortened))
+                Text(fileTimestampFormatter.string(from: file.modifiedAt))
                     .frame(width: columnWidth, alignment: .leading)
             }
             if visibleColumns.contains(.uploadedBy) {
@@ -200,8 +244,56 @@ struct MainView: View {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await filesVM.upload(fileURL: url) }
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        let urls = panel.urls
+        Task { await filesVM.upload(fileURLs: urls) }
+    }
+
+    private var dropOverlay: some View {
+        ZStack {
+            Color.accentColor.opacity(0.12)
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
+                .padding(8)
+            Text("Drop files to upload")
+                .font(.title2.bold())
+                .padding(12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// Handles files dragged in from Finder, mirroring presentUploadPanel's
+    /// own upload(fileURLs:) call. NSItemProvider's load callback isn't
+    /// itself MainActor-isolated, so this bridges into structured
+    /// concurrency (withCheckedContinuation) rather than calling back into
+    /// filesVM directly from it.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard !providers.isEmpty else { return false }
+        Task {
+            let urls = await Self.loadFileURLs(from: providers)
+            guard !urls.isEmpty else { return }
+            await filesVM.upload(fileURLs: urls)
+        }
+        return true
+    }
+
+    /// Loads sequentially rather than concurrently (e.g. via TaskGroup):
+    /// NSItemProvider isn't Sendable, and dragging in enough files at once
+    /// for that to matter performance-wise essentially never happens.
+    private static func loadFileURLs(from providers: [NSItemProvider]) async -> [URL] {
+        var results: [URL] = []
+        for provider in providers {
+            let url = await withCheckedContinuation { (continuation: CheckedContinuation<URL?, Never>) in
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    continuation.resume(returning: url)
+                }
+            }
+            if let url {
+                results.append(url)
+            }
+        }
+        return results
     }
 }

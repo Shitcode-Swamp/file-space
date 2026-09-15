@@ -22,6 +22,19 @@ struct FileRecord: Codable, Identifiable, Sendable, Hashable {
     }
 }
 
+/// DD/MM/YYYY, 24-hour time, in the user's local time zone — used by
+/// MainView for the Created/Modified columns. `en_US_POSIX` pins the literal
+/// "dd/MM/yyyy HH:mm" pattern so it renders the same regardless of the
+/// user's system locale (which would otherwise reorder the date components
+/// or switch to a 12-hour clock).
+let fileTimestampFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = .current
+    formatter.dateFormat = "dd/MM/yyyy HH:mm"
+    return formatter
+}()
+
 struct RegisterResponse: Codable, Sendable {
     let id: Int64
     let username: String

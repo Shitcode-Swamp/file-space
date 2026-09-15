@@ -114,11 +114,19 @@ final class APIClientTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeClient() -> APIClient {
+    /// `singleShotUploadThreshold` defaults to the real 8MiB cutoff;
+    /// chunked-upload tests pass 0 so their small fixture files still
+    /// exercise the chunked session protocol instead of legitimately
+    /// qualifying for the single-shot fast path.
+    private func makeClient(singleShotUploadThreshold: Int64 = 8 << 20) -> APIClient {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: config)
-        return APIClient(baseURL: URL(string: "http://stub.invalid")!, session: session)
+        return APIClient(
+            baseURL: URL(string: "http://stub.invalid")!,
+            session: session,
+            singleShotUploadThreshold: singleShotUploadThreshold
+        )
     }
 
     func testFilesRequestRetriesExactlyOnceAfterSuccessfulRefresh() async throws {
@@ -213,5 +221,191 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(files[0].size, 1234)
         XCTAssertEqual(files[0].uploadedBy, "alice")
         XCTAssertEqual(files[0].editedBy, "bob")
+    }
+
+    private func makeTempFile(bytes: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-big.bin")
+        try Data((0..<bytes).map { UInt8($0 % 256) }).write(to: url)
+        return url
+    }
+
+    func testUploadFileInChunksSendsInOrderAndReportsProgress() async throws {
+        KeychainStore.set("valid-token", key: "accessToken")
+
+        let fileURL = try makeTempFile(bytes: 10)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let requests = RequestLog()
+        StubURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            let method = request.httpMethod ?? ""
+            requests.record(method: method, path: path)
+
+            if path == "/api/files/uploads" && method == "POST" {
+                return .json(201, ["uploadId": "up-1", "chunkSize": 4])
+            }
+            if path.hasPrefix("/api/files/uploads/up-1/chunks/") && method == "PUT" {
+                return StubResponse(statusCode: 204, headers: [:], body: Data())
+            }
+            if path == "/api/files/uploads/up-1/complete" && method == "POST" {
+                return .json(201, [
+                    "id": 7, "name": "big.bin", "extension": "bin", "size": 10,
+                    "createdAt": "2026-09-12T10:00:00Z", "modifiedAt": "2026-09-12T10:00:00Z",
+                    "uploadedBy": "alice", "editedBy": "alice",
+                ] as [String: Any])
+            }
+            return StubResponse(statusCode: 404, headers: [:], body: Data())
+        }
+
+        let client = makeClient(singleShotUploadThreshold: 0)
+        let progress = ProgressLog()
+        let created = try await client.uploadFile(fileURL: fileURL) { sent, total in
+            progress.record(sent: sent, total: total)
+        }
+
+        XCTAssertEqual(created.id, 7)
+        XCTAssertEqual(created.name, "big.bin")
+
+        // 10 bytes at chunkSize 4 -> chunks of 4, 4, 2 bytes, in order.
+        let chunkPaths = requests.entries.filter { $0.method == "PUT" }.map(\.path)
+        XCTAssertEqual(chunkPaths, [
+            "/api/files/uploads/up-1/chunks/0",
+            "/api/files/uploads/up-1/chunks/1",
+            "/api/files/uploads/up-1/chunks/2",
+        ])
+        XCTAssertEqual(progress.entries.map(\.sent), [4, 8, 10])
+        XCTAssertEqual(progress.entries.map(\.total), [10, 10, 10])
+
+        // initiate, 3 chunks, complete.
+        XCTAssertEqual(requests.entries.count, 5)
+        XCTAssertEqual(requests.entries.last?.method, "POST")
+        XCTAssertEqual(requests.entries.last?.path, "/api/files/uploads/up-1/complete")
+    }
+
+    func testUploadFileInChunksAbortsSessionWhenAChunkFails() async throws {
+        KeychainStore.set("valid-token", key: "accessToken")
+
+        let fileURL = try makeTempFile(bytes: 10)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let requests = RequestLog()
+        StubURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            let method = request.httpMethod ?? ""
+            requests.record(method: method, path: path)
+
+            if path == "/api/files/uploads" && method == "POST" {
+                return .json(201, ["uploadId": "up-2", "chunkSize": 4])
+            }
+            if path.hasPrefix("/api/files/uploads/up-2/chunks/") && method == "PUT" {
+                return StubResponse(statusCode: 500, headers: [:], body: Data("{\"error\":\"boom\"}".utf8))
+            }
+            if path == "/api/files/uploads/up-2" && method == "DELETE" {
+                return StubResponse(statusCode: 204, headers: [:], body: Data())
+            }
+            return StubResponse(statusCode: 404, headers: [:], body: Data())
+        }
+
+        let client = makeClient(singleShotUploadThreshold: 0)
+
+        do {
+            _ = try await client.uploadFile(fileURL: fileURL)
+            XCTFail("expected the upload to throw once a chunk fails")
+        } catch let error as APIError {
+            XCTAssertEqual(error.errorDescription, "boom")
+        }
+
+        // The failed chunk short-circuits the loop: complete is never
+        // reached, but the session is aborted so its scratch file doesn't
+        // linger server-side until its idle timeout.
+        XCTAssertEqual(requests.entries.filter { $0.method == "DELETE" && $0.path == "/api/files/uploads/up-2" }.count, 1)
+        XCTAssertTrue(requests.entries.allSatisfy { !($0.method == "POST" && $0.path.hasSuffix("/complete")) })
+    }
+
+    // Pins the fix this was written for: a file at or below the default
+    // 8MiB threshold must go through the original single-shot multipart
+    // endpoint (one request) rather than the chunked-upload session
+    // protocol (initiate + chunk + complete = three round trips), which
+    // used to run unconditionally and made folder sync's "re-upload a
+    // changed file on every save" noticeably slower for ordinary
+    // source-sized files.
+    func testUploadFileSmallFileUsesSingleShotEndpointNotChunkedSession() async throws {
+        KeychainStore.set("valid-token", key: "accessToken")
+
+        let fileURL = try makeTempFile(bytes: 10)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let requests = RequestLog()
+        StubURLProtocol.handler = { request in
+            let path = request.url?.path ?? ""
+            let method = request.httpMethod ?? ""
+            requests.record(method: method, path: path)
+
+            if path == "/api/files" && method == "POST" {
+                return .json(201, [
+                    "id": 9, "name": "big.bin", "extension": "bin", "size": 10,
+                    "createdAt": "2026-09-12T10:00:00Z", "modifiedAt": "2026-09-12T10:00:00Z",
+                    "uploadedBy": "alice", "editedBy": "alice",
+                ] as [String: Any])
+            }
+            return StubResponse(statusCode: 404, headers: [:], body: Data())
+        }
+
+        // Default threshold (8MiB) this time -- a 10-byte file must
+        // legitimately qualify for the fast path on its own.
+        let client = makeClient()
+        let progress = ProgressLog()
+        let created = try await client.uploadFile(fileURL: fileURL) { sent, total in
+            progress.record(sent: sent, total: total)
+        }
+
+        XCTAssertEqual(created.id, 9)
+        XCTAssertEqual(requests.entries.count, 1)
+        XCTAssertEqual(requests.entries[0].method, "POST")
+        XCTAssertEqual(requests.entries[0].path, "/api/files")
+        XCTAssertTrue(requests.entries.allSatisfy { !$0.path.contains("/uploads") })
+
+        // A single "fully done" progress callback, not a per-chunk trickle.
+        XCTAssertEqual(progress.entries.map(\.sent), [10])
+        XCTAssertEqual(progress.entries.map(\.total), [10])
+    }
+}
+
+/// Thread-safe log of (method, path) pairs in call order, for asserting the
+/// exact sequence of requests a multi-step flow (like chunked upload) makes.
+final class RequestLog: @unchecked Sendable {
+    struct Entry { let method: String; let path: String }
+    private let lock = NSLock()
+    private var _entries: [Entry] = []
+
+    var entries: [Entry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _entries
+    }
+
+    func record(method: String, path: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        _entries.append(Entry(method: method, path: path))
+    }
+}
+
+/// Thread-safe log of (sent, total) progress callback invocations, in order.
+final class ProgressLog: @unchecked Sendable {
+    struct Entry { let sent: Int64; let total: Int64 }
+    private let lock = NSLock()
+    private var _entries: [Entry] = []
+
+    var entries: [Entry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _entries
+    }
+
+    func record(sent: Int64, total: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
+        _entries.append(Entry(sent: sent, total: total))
     }
 }
