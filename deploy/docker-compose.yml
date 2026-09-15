@@ -32,6 +32,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # Static SPA build, served by nginx. VITE_API_URL is left empty so the
+  # app calls the API same-origin (/api/...); cloudflared's ingress config
+  # routes /api/* to `api` and everything else to this service on the same
+  # public hostname (see ../cloudflared/config.yml.example).
+  web:
+    build: ../frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
@@ -42,6 +52,7 @@ services:
       - ./cloudflared:/etc/cloudflared:ro
     depends_on:
       - api
+      - web
 
 volumes:
   pgdata:
