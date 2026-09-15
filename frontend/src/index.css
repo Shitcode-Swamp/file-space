@@ -50,10 +50,20 @@
   }
 }
 
+/* Pin the app to the viewport with no page-level scrollbar; the file table
+   below gets its own internal scroll region instead (see .file-table-viewport
+   in App.css) so scrolling the list never grows the page. */
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
 #root {
   max-width: 100%;
-  min-height: 100svh;
+  height: 100svh;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 body {

@@ -1,6 +1,7 @@
 import type {
   ApiFileRecord,
   ListFilesParams,
+  ListFilesResult,
   LoginResponse,
   RefreshResponse,
   RegisterResponse,
@@ -174,8 +175,14 @@ async function requestBlob(path: string): Promise<{ blob: Blob; filename: string
 
 function parseFilename(disposition: string | null): string | null {
   if (!disposition) return null
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
-  return match ? decodeURIComponent(match[1]) : null
+  // Prefer the RFC 6266 filename* form: it's percent-encoded UTF-8, so it
+  // survives non-ASCII names that the plain filename="..." fallback (sent
+  // as raw bytes, and Latin-1-decoded by the browser's Headers API) would
+  // otherwise mangle.
+  const extended = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  if (extended) return decodeURIComponent(extended[1])
+  const plain = /filename="?([^";]+)"?/i.exec(disposition)
+  return plain ? plain[1] : null
 }
 
 // ---- Public API surface -------------------------------------------------
@@ -201,13 +208,24 @@ export async function refresh(refreshToken: string): Promise<RefreshResponse> {
   })
 }
 
-export async function listFiles(params: ListFilesParams = {}): Promise<ApiFileRecord[]> {
+export async function listFiles(params: ListFilesParams = {}): Promise<ListFilesResult> {
   const search = new URLSearchParams()
   if (params.sort) search.set('sort', params.sort)
   if (params.order) search.set('order', params.order)
   if (params.extension) search.set('extension', params.extension)
+  if (params.limit !== undefined) search.set('limit', String(params.limit))
+  if (params.offset !== undefined) search.set('offset', String(params.offset))
   const qs = search.toString()
-  return requestJson<ApiFileRecord[]>(`/api/files${qs ? `?${qs}` : ''}`)
+
+  const res = await requestRaw(`/api/files${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    throw new ApiError(res.status, await parseErrorMessage(res))
+  }
+  const files = (await res.json()) as ApiFileRecord[]
+  // Cross-origin fetch() hides response headers not explicitly exposed by
+  // the server's CORS config; see main.go's ExposedHeaders.
+  const hasMore = res.headers.get('X-Has-More') === 'true'
+  return { files, hasMore }
 }
 
 export async function getFile(id: number): Promise<ApiFileRecord> {
@@ -224,7 +242,105 @@ export async function downloadFile(id: number): Promise<{ blob: Blob; filename: 
   return requestBlob(`/api/files/${id}/download`)
 }
 
-export async function uploadFile(file: File): Promise<ApiFileRecord> {
+interface InitiateUploadResponse {
+  uploadId: string
+  chunkSize: number
+}
+
+/** Starts a chunked-upload session for a file of the given declared size. */
+async function initiateUpload(filename: string, size: number): Promise<InitiateUploadResponse> {
+  return requestJson<InitiateUploadResponse>('/api/files/uploads', {
+    method: 'POST',
+    body: { filename, size },
+  })
+}
+
+/**
+ * Uploads one chunk, reporting (bytesSent, chunk.size) as the browser
+ * actually flushes it over the wire. This is the one place this module uses
+ * XMLHttpRequest instead of fetch(): fetch has no upload-progress event, only
+ * XHR's `upload.onprogress` does, and progress feedback is the whole point
+ * of chunking a big upload in the first place.
+ */
+async function uploadChunk(
+  uploadId: string,
+  index: number,
+  chunk: Blob,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<void> {
+  const path = `/api/files/uploads/${uploadId}/chunks/${index}`
+
+  const send = (token: string | null) =>
+    new Promise<XMLHttpRequest>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('PUT', `${BASE_URL}${path}`)
+      if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total)
+        }
+      }
+      xhr.onload = () => resolve(xhr)
+      xhr.onerror = () => reject(new Error('network error uploading chunk'))
+      xhr.send(chunk)
+    })
+
+  const token = getAccessToken()
+  let xhr = await send(token)
+
+  // Same one-refresh-one-retry contract as requestRaw, just reimplemented
+  // for XHR since it can't share fetch's Response-based code path.
+  if (xhr.status === 401 && token) {
+    const newToken = await tryRefresh()
+    if (newToken) {
+      xhr = await send(newToken)
+    }
+  }
+
+  if (xhr.status < 200 || xhr.status >= 300) {
+    let message = `Request failed with status ${xhr.status}`
+    try {
+      const parsed = JSON.parse(xhr.responseText) as { error?: string }
+      if (parsed.error) message = parsed.error
+    } catch {
+      // response body wasn't JSON — keep the generic message
+    }
+    throw new ApiError(xhr.status, message)
+  }
+}
+
+async function completeUpload(uploadId: string): Promise<ApiFileRecord> {
+  return requestJson<ApiFileRecord>(`/api/files/uploads/${uploadId}/complete`, { method: 'POST' })
+}
+
+async function abortUpload(uploadId: string): Promise<void> {
+  await requestJson<void>(`/api/files/uploads/${uploadId}`, { method: 'DELETE' })
+}
+
+/**
+ * Files at or below this size upload via the original single-shot
+ * multipart endpoint (1 request) instead of the chunked-upload session
+ * protocol (initiate + chunk + complete = 3 requests at minimum). Chunking
+ * exists to keep large uploads under Cloudflare's per-request body-size
+ * limit — a file that already fits in a single chunk was never at risk of
+ * hitting that limit, so paying the extra round trips for it is pure
+ * overhead. Matches backend/internal/service/uploads.go's UploadChunkSize.
+ *
+ * Mutable (rather than a const) only so tests can force small fixture
+ * files through the chunked path via setSingleShotUploadThresholdForTests,
+ * instead of needing multi-megabyte fixtures to naturally clear it.
+ * Application code never changes it.
+ */
+let singleShotUploadThreshold = 8 << 20 // 8 MiB
+
+/** Test-only seam — see singleShotUploadThreshold. Not used by application code. */
+export function setSingleShotUploadThresholdForTests(bytes: number): void {
+  singleShotUploadThreshold = bytes
+}
+
+/** Original single-shot upload path — one request, used for files at or
+ * below singleShotUploadThreshold. */
+async function uploadSingleShot(file: File): Promise<ApiFileRecord> {
   const formData = new FormData()
   formData.append('file', file)
   return requestJson<ApiFileRecord>('/api/files', {
@@ -232,6 +348,51 @@ export async function uploadFile(file: File): Promise<ApiFileRecord> {
     body: formData,
     isFormData: true,
   })
+}
+
+/**
+ * Uploads file in fixed-size chunks (the server tells us the size —
+ * currently 8MiB, see backend/internal/service/uploads.go), so a single
+ * request is never more than a few MB regardless of the file's total size.
+ * That matters in production: file-space sits behind a Cloudflare Tunnel
+ * (REQUIREMENTS.md §5.6), whose edge rejects large single-request bodies
+ * outright, and it's what makes onProgress meaningful for genuinely large
+ * files instead of just "0% ... 100%". Files small enough to need only one
+ * chunk anyway skip this session protocol entirely — see
+ * singleShotUploadThreshold.
+ */
+export async function uploadFileInChunks(
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<ApiFileRecord> {
+  if (file.size <= singleShotUploadThreshold) {
+    const created = await uploadSingleShot(file)
+    onProgress?.(file.size, file.size)
+    return created
+  }
+
+  const { uploadId, chunkSize } = await initiateUpload(file.name, file.size)
+
+  try {
+    let uploaded = 0
+    let index = 0
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      const chunk = file.slice(offset, offset + chunkSize)
+      const uploadedBeforeThisChunk = uploaded
+      await uploadChunk(uploadId, index, chunk, (loaded) => {
+        onProgress?.(uploadedBeforeThisChunk + loaded, file.size)
+      })
+      uploaded += chunk.size
+      index += 1
+    }
+    return await completeUpload(uploadId)
+  } catch (err) {
+    // Best-effort: free the server-side scratch file/session now rather
+    // than waiting for its idle timeout. A failure here doesn't change what
+    // gets thrown — the upload already failed for its own reason.
+    await abortUpload(uploadId).catch(() => {})
+    throw err
+  }
 }
 
 export async function deleteFile(id: number): Promise<void> {

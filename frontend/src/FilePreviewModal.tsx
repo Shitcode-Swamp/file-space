@@ -31,24 +31,24 @@ export function FilePreviewModal({ preview, onClose }: FilePreviewModalProps) {
 
   return (
     <div
-      className="preview-backdrop"
+      className="modal-backdrop"
       onClick={onClose}
       role="presentation"
     >
       <div
-        className="preview-panel"
+        className="modal-panel"
         role="dialog"
         aria-modal="true"
         aria-label={`Preview of ${preview.file.name}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="preview-header">
+        <div className="modal-header">
           <strong>{preview.file.name}</strong>
           <button type="button" onClick={onClose} aria-label="Close preview">
             Close
           </button>
         </div>
-        <div className="preview-body">
+        <div className="modal-body">
           {preview.status === 'loading' && <p>Loading preview…</p>}
           {preview.status === 'error' && (
             <p className="error">Failed to load preview: {preview.message}</p>

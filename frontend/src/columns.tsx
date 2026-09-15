@@ -1,6 +1,5 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import type { FileRecord } from './types'
-import type { SortOrder } from './api/types'
 
 /**
  * Column structure for the file table (REQUIREMENTS.md section 3 & 4).
@@ -9,15 +8,16 @@ import type { SortOrder } from './api/types'
  * can be shown/hidden via TanStack Table's column-visibility state (see
  * App.tsx).
  *
- * Sorting is server-side (REQUIREMENTS.md §4 "Sorting" — only "Edited by"
- * needs it): the "Edited by" header renders a button that cycles
- * none -> asc -> desc -> none via `onToggleEditedBySort`, which App.tsx
- * turns into `sort=editedBy&order=...` query params sent to the backend.
- * This file does not reimplement sorting/filtering itself.
+ * Sorting is client-side, via TanStack Table's built-in sorting model (see
+ * App.tsx's `sorting` state / `getSortedRowModel`): every data column here
+ * is sortable by clicking its header, name is the default sort, and
+ * App.tsx renders the clickable header + indicator generically rather than
+ * this file hand-rolling a toggle per column.
  *
  * The "actions" column holds Download/Delete today; it's a dedicated column
  * (not folded into "name") so a future click-to-preview action on the name
- * cell can be added without touching this layout.
+ * cell can be added without touching this layout. It opts out of sorting
+ * since it has no backing data field.
  *
  * The "name" cell is rendered as a clickable button when the file's
  * extension is previewable (REQUIREMENTS.md §2: .java/.png), calling
@@ -27,22 +27,31 @@ import type { SortOrder } from './api/types'
 export const PREVIEWABLE_EXTENSIONS = ['java', 'png']
 
 export interface ColumnsOptions {
-  editedBySortOrder: SortOrder | null
-  onToggleEditedBySort: () => void
   onDownload: (id: number) => void
   onDelete: (id: number, name: string) => void
   onPreview: (file: FileRecord) => void
 }
 
-function sortIndicator(order: SortOrder | null): string {
-  if (order === 'asc') return '↑'
-  if (order === 'desc') return '↓'
-  return '↕'
+// The backend sends createdAt/modifiedAt as ISO 8601 UTC timestamps; render
+// them in the viewer's own timezone as DD/MM/YYYY, 24-hour time — a fixed
+// format (via 'en-GB') rather than one that shifts with the viewer's locale
+// (e.g. MM/DD/YYYY + AM/PM under 'en-US').
+const dateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+})
+
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return dateTimeFormatter.format(date)
 }
 
 export function createColumns({
-  editedBySortOrder,
-  onToggleEditedBySort,
   onDownload,
   onDelete,
   onPreview,
@@ -73,11 +82,13 @@ export function createColumns({
       id: 'createdAt',
       accessorKey: 'createdAt',
       header: 'Created',
+      cell: ({ getValue }) => formatDateTime(getValue<string>()),
     },
     {
       id: 'modifiedAt',
       accessorKey: 'modifiedAt',
       header: 'Modified',
+      cell: ({ getValue }) => formatDateTime(getValue<string>()),
     },
     {
       id: 'uploadedBy',
@@ -87,21 +98,13 @@ export function createColumns({
     {
       id: 'editedBy',
       accessorKey: 'editedBy',
-      header: () => (
-        <button
-          type="button"
-          className="sort-toggle"
-          onClick={onToggleEditedBySort}
-          aria-label={`Sort by edited by (currently ${editedBySortOrder ?? 'unsorted'})`}
-        >
-          Edited by {sortIndicator(editedBySortOrder)}
-        </button>
-      ),
+      header: 'Edited by',
     },
     {
       id: 'actions',
       header: 'Actions',
       enableHiding: false,
+      enableSorting: false,
       cell: ({ row }) => (
         <div className="row-actions">
           <button type="button" onClick={() => onDownload(row.original.id)}>

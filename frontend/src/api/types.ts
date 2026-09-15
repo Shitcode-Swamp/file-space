@@ -32,11 +32,23 @@ export interface RefreshResponse {
 }
 
 export type SortOrder = 'asc' | 'desc'
+export type SortField = 'name' | 'createdAt' | 'modifiedAt' | 'uploadedBy' | 'editedBy'
 
 export interface ListFilesParams {
-  sort?: 'editedBy'
+  sort?: SortField
   order?: SortOrder
   extension?: string
+  /** Page size. The backend defaults this to 50 and caps it at 1000. */
+  limit?: number
+  offset?: number
+}
+
+/** GET /api/files's bare JSON array, plus whether more pages exist — the
+ * latter comes back as the X-Has-More response header (see client.ts),
+ * not part of the JSON body. */
+export interface ListFilesResult {
+  files: ApiFileRecord[]
+  hasMore: boolean
 }
 
 /** Shape of the JSON error body the API sends alongside 4xx/5xx statuses. */
