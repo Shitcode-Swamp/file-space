@@ -48,6 +48,8 @@ struct MainView: View {
                 Text(error).foregroundStyle(.red).font(.callout).padding(.horizontal)
             }
             table
+            Divider()
+            SyncPanelView(viewModel: syncVM)
         }
         .task {
             await filesVM.refresh()
@@ -118,7 +120,6 @@ struct MainView: View {
             }
 
             Spacer()
-            SyncStatusPillView(viewModel: syncVM)
             if filesVM.isLoading { ProgressView().scaleEffect(0.6) }
         }
         .padding(.horizontal)
@@ -151,7 +152,6 @@ struct MainView: View {
     // (if visibleColumns.contains(...)) columns, whereas a plain List row
     // built with ViewBuilder handles the same conditionals without issue.
     private let nameWidth: CGFloat = 220
-    private let syncWidth: CGFloat = 130
     private let columnWidth: CGFloat = 140
     private let actionsWidth: CGFloat = 160
 
@@ -170,7 +170,6 @@ struct MainView: View {
     private var tableHeader: some View {
         HStack(spacing: 12) {
             sortHeaderButton(.name, width: nameWidth)
-            Text("Sync").bold().frame(width: syncWidth, alignment: .leading)
             if visibleColumns.contains(.createdAt) {
                 sortHeaderButton(.createdAt, width: columnWidth)
             }
@@ -201,9 +200,6 @@ struct MainView: View {
             }
             .frame(width: nameWidth, alignment: .leading)
 
-            syncBadge(for: syncVM.fileStatuses[file.name])
-                .frame(width: syncWidth, alignment: .leading)
-
             if visibleColumns.contains(.createdAt) {
                 Text(fileTimestampFormatter.string(from: file.createdAt))
                     .frame(width: columnWidth, alignment: .leading)
@@ -227,32 +223,6 @@ struct MainView: View {
 
             Spacer(minLength: 0)
         }
-    }
-
-    /// Per-file sync status badge (B) — surfaces what SyncViewModel already
-    /// tracks per filename right in the table you're already scanning,
-    /// rather than only in the sync card's activity log. `nil` (no entry at
-    /// all, e.g. sync has never run or this file predates it) renders
-    /// nothing rather than a misleading "not synced yet".
-    @ViewBuilder
-    private func syncBadge(for status: FileSyncStatus?) -> some View {
-        switch status {
-        case .synced: badgeLabel("Synced", color: .green)
-        case .uploading: badgeLabel("Uploading", color: .indigo)
-        case .downloading: badgeLabel("Downloading", color: .teal)
-        case .conflict: badgeLabel("Conflict", color: .orange)
-        case .pending: badgeLabel("Not synced yet", color: .secondary)
-        case nil: EmptyView()
-        }
-    }
-
-    private func badgeLabel(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
     }
 
     private var table: some View {
