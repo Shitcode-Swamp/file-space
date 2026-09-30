@@ -1,0 +1,231 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Мова та шрифти ----------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{ukrainian}
+\setotherlanguage{english}
+
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+
+% ---------- Компонування ----------
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+    pdftitle={Звіт про десктоп-клієнт проєкту Remote File Folder Client},
+    pdfauthor={Yana Utochkina}
+}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
+% Заглушка для скріншота: якщо файл #1 існує в img/screenshots/, вставляє
+% реальне зображення; інакше -- підписану рамку з очікуваним шляхом до
+% файлу, щоб документ завжди компілювався, навіть до додавання скріншотів.
+\newcommand{\screenshot}[3]{%
+    \begin{figure}[H]
+        \centering
+        \IfFileExists{img/screenshots/#1}{%
+            \includegraphics[width=0.85\linewidth]{img/screenshots/#1}%
+        }{%
+            \fbox{\begin{minipage}[c][5.5cm][c]{0.85\linewidth}
+                \centering
+                \textit{Місце для скріншота}\\[6pt]
+                \texttt{\small img/screenshots/#1}\\[6pt]
+                \small додайте зображення за цим шляхом і перекомпілюйте
+            \end{minipage}}%
+        }
+        \caption{#2}
+        \label{#3}
+    \end{figure}
+}
+
+\title{\textbf{Звіт про десктоп-клієнт\\[2pt] \large проєкту Remote File Folder Client\\(спрощений аналог Google Drive)}}
+\author{Уточкіна Яна}
+\date{Етап: десктоп-клієнт (macOS/SwiftUI) -- проєктування, використання та тестування \\ \today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+Цей звіт документує \textbf{десктоп-клієнт macOS} проєкту \textbf{Remote File Folder Client} (\texttt{desktop/Sources/FileSpaceDesktop/}) -- спрощеного аналога Google Drive з веб- і десктоп-клієнтами, Go-бекендом, PostgreSQL та синхронізацією локальної теки. У звіті описано внутрішню структуру клієнта, розглянуто його прецеденти використання зі скріншотами та задокументовано покриття модульними тестами, включно з поведінкою сортування й фільтрації (сортування за \emph{``Edited by''}, фільтрація за \texttt{.cs}/\texttt{.jpg}).
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Вступ}
+% =====================================================================
+
+Десктоп-клієнт -- один із двох фронтендів (другий -- веб-клієнт на React) до єдиного Go API та бази PostgreSQL, самостійно розгорнутих на домашньому Ubuntu-сервері за Cloudflare Tunnel. Усі прецеденти, які система підтримує через будь-який клієнт -- реєстрація, автентифікація, перегляд файлів із сортованими/фільтрованими атрибутами, перегляд вмісту \texttt{.java}/\texttt{.png}, вивантаження, завантаження, видалення -- доступні з десктоп-клієнта; крім того, він є \emph{єдиним} клієнтом, що реалізує безперервну фонову синхронізацію локальної теки, оскільки браузер не може постійно спостерігати за локальною текою.
+
+% =====================================================================
+\section{Архітектура десктоп-клієнта}
+% =====================================================================
+
+\subsection{Внутрішня структура}
+
+Тека з вихідним кодом десктоп-клієнта, \texttt{desktop/Sources/\allowbreak FileSpaceDesktop/}, групує код так: SwiftUI-подання відокремлені від рушія синхронізації (\texttt{DirectoryWatcher}, \texttt{SyncViewModel} та \texttt{SyncState}/\texttt{FolderScanner} з \texttt{Manifest.swift}) і від спільного мережевого шару \texttt{APIClient}/\texttt{KeychainStore}:
+
+\begin{itemize}[nosep]
+    \item \textbf{Подання (Views)}: \texttt{LoginView}, \texttt{MainView} (таблиця файлів, сортування/фільтрація/видимість стовпців), \texttt{FilePreviewView} (\texttt{.java}/\texttt{.png}), \texttt{SyncPanelView} та \texttt{SyncConflicts\allowbreak SectionView} (керування синхронізацією теки та інтерфейс розв'язання конфліктів), \texttt{ContentView} (верхньорівнева навігація між станами ``не увійшов''/``увійшов'');
+    \item \textbf{View-моделі}: \texttt{FilesViewModel} (список файлів, сортування/фільтрація, вивантаження/завантаження/видалення), \texttt{SyncViewModel} (цикл узгодження, виявлення/розв'язання конфліктів), \texttt{AppState} (стан сесії/автентифікації);
+    \item \textbf{Мережа та сховище}: \texttt{APIClient} (REST-клієнт на \texttt{URLSession}, за протоколом \texttt{APIClientProtocol}, який використовується для тестування), \texttt{KeychainStore} (зберігання токенів через macOS Keychain), \texttt{Models.swift} (Codable DTO, що відповідають JSON-формату Go API);
+    \item \textbf{Рушій синхронізації}: \texttt{DirectoryWatcher} (обгортка \texttt{FSEvents}), \texttt{Manifest.swift} (\texttt{FolderScanner}, \texttt{SyncState}, \texttt{SyncedFileEntry}).
+\end{itemize}
+
+Десктоп-клієнт звертається до Go API-сервера лише через HTTPS за публічним хостнеймом Cloudflare Tunnel -- тим самим, що використовує браузерний JavaScript веб-клієнта -- проходячи через серверні шари \texttt{Handler} $\to$ \texttt{Service} $\to$ \texttt{Repository} та, для вмісту файлів, інтерфейс \texttt{FileStorage}.
+
+\subsection{Синхронізація}
+
+Синхронізація -- найскладніша функція десктоп-клієнта і єдина, що не має аналога у веб-клієнті. За кожним тригером -- сповіщенням про зміну від \texttt{FSEvents} через \texttt{DirectoryWatcher} або періодичним опитуванням -- \texttt{SyncViewModel} викликає \texttt{POST /api/sync/diff}, надсилаючи \texttt{lastSyncedVersion} та маніфест (ім'я, розмір, sha256), обчислений \texttt{FolderScanner}; сервер повертає дії \texttt{download}/\texttt{delete\_local}/\texttt{conflict} разом із \texttt{newVersion}. Клієнт застосовує ці дії, а потім незалежно сканує свою локальну теку й вивантажує, повторно вивантажує або видаляє файли на основі власного збереженого \texttt{SyncState}.
+
+\subsubsection*{Розв'язання конфліктів}
+
+Дія \texttt{conflict} означає, що той самий файл змінився з обох боків від часу останньої синхронізації: сервер порівнює наданий клієнтом маніфест (ім'я, розмір, sha256) із власним записом і повертає дію \texttt{conflict} із розміром, часом модифікації та останнім редактором віддаленої сторони, коли хеші двох сторін справді не збігаються. На десктоп-клієнті \texttt{SyncViewModel} записує такі дії в опублікований список \texttt{conflicts} замість автоматичного розв'язання, а \texttt{SyncConflictsSectionView} (частина вже наявної панелі синхронізації) дозволяє користувачу обрати \textbf{Keep Local} (повторно вивантажити, перезаписавши віддалену копію), \textbf{Keep Remote} (перезаписати локальний файл) або \textbf{Keep Both} (зберегти локальний файл під перейменованою копією й прийняти віддалену версію).
+
+% =====================================================================
+\section{Прецеденти використання та скріншоти}
+\label{sec:usecases}
+% =====================================================================
+
+У цьому розділі розглянуто прецеденти використання десктоп-клієнта, кожен зі скріншотом працюючого застосунку.
+
+\subsection{Реєстрація та автентифікація}
+
+\emph{Реєстрація} (рис.~\ref{fig:ss-register}) створює новий обліковий запис за логіном/паролем; \emph{автентифікація} (рис.~\ref{fig:ss-login}) потрібна для кожної іншої файлової операції, оскільки робоча область доступна лише після успішного входу, після чого \texttt{APIClient} зберігає отриману пару JWT access/refresh у macOS Keychain через \texttt{KeychainStore}.
+
+\screenshot{01-register.png}{Екран реєстрації}{fig:ss-register}
+\screenshot{02-login.png}{Екран входу}{fig:ss-login}
+
+\subsection{Перегляд файлів: атрибути, стовпці, сортування, фільтрація}
+
+Рис.~\ref{fig:ss-list} показує основну таблицю файлів з усіма видимими стовпцями атрибутів (ім'я, створено, змінено, автор вивантаження, автор редагування); стовпець імені приховати не можна, тоді як інші перемикаються через меню ``Columns'' (рис.~\ref{fig:ss-columns}).
+
+\screenshot{03-file-list-overview.png}{Основний список файлів з усіма видимими стовпцями атрибутів}{fig:ss-list}
+\screenshot{04-column-visibility.png}{Меню Columns: перемикання стовпця, відмінного від імені}{fig:ss-columns}
+
+\textbf{Сортування:} список файлів сортується за \emph{``Edited by''} за зростанням або спаданням при кліку на заголовок цього стовпця, що циклічно перемикає \texttt{FilesViewModel.sortDirection} через none~$\to$~ascending~$\to$~descending~$\to$~none (рис.~\ref{fig:ss-sort}).
+
+\screenshot{05-sort-edited-by.png}{Список файлів, відсортований за ``Edited by''}{fig:ss-sort}
+
+\textbf{Фільтрація:} випадний список розширень, який формується з розширень, що реально присутні серед файлів користувача, фільтрує список лише до \texttt{.cs} або лише до \texttt{.jpg} (або назад до ``All'') через \texttt{FilesViewModel.extensionFilter} (рис.~\ref{fig:ss-filter}).
+
+\screenshot{06-filter-extension.png}{Застосований фільтр за розширенням (\texttt{.cs} або \texttt{.jpg})}{fig:ss-filter}
+
+\subsection{Перегляд вмісту файлу}
+
+Клік на файл показує його вміст, якщо розширення -- \texttt{.java} (відображається як текст, рис.~\ref{fig:ss-java}) або \texttt{.png} (відображається як зображення, рис.~\ref{fig:ss-png}); файли з будь-яким іншим розширенням можна переглядати у списку й завантажувати, але не відображати їхній вміст.
+
+\screenshot{07-preview-java.png}{Файл \texttt{.java}, показаний як текст}{fig:ss-java}
+\screenshot{08-preview-png.png}{Файл \texttt{.png}, показаний як зображення}{fig:ss-png}
+
+\subsection{Вивантаження, завантаження, видалення}
+
+Рис.~\ref{fig:ss-upload} показує вивантаження в процесі -- великі файли розбиваються на chunk'и, щоб жоден окремий HTTP-запит не перевищував ліміт розміру тіла безкоштовного тарифу Cloudflare Tunnel, а \texttt{uploadProgress} відображає кількість надісланих байтів по кожному chunk'у. Рис.~\ref{fig:ss-download} та \ref{fig:ss-delete} показують завантаження файлу в теку Downloads користувача та видалення файлу з віддаленої робочої області.
+
+\screenshot{09-upload.png}{Вивантаження файлу в процесі}{fig:ss-upload}
+\screenshot{10-download.png}{Завантаження файлу}{fig:ss-download}
+\screenshot{11-delete.png}{Видалення файлу}{fig:ss-delete}
+
+\subsection{Синхронізація локальної теки}
+
+Рис.~\ref{fig:ss-sync} показує панель синхронізації з обраною текою й активною синхронізацією: \texttt{DirectoryWatcher} генерує сповіщення про зміни на основі \texttt{FSEvents}, а \texttt{SyncViewModel} також періодично опитує сервер, виконуючи цикл узгодження, описаний у \S2.2. Рис.~\ref{fig:ss-conflict} показує ту саму панель, коли сервер повідомляє про справжній конфлікт: файл показано разом із його локальним/віддаленим розміром та редактором, а також діями Keep Local / Keep Remote / Keep Both.
+
+\screenshot{12-sync-panel.png}{Панель синхронізації теки, активна синхронізація}{fig:ss-sync}
+\screenshot{13-sync-conflict.png}{Панель синхронізації теки з виявленим конфліктом та варіантами його розв'язання}{fig:ss-conflict}
+
+% =====================================================================
+\section{Модульне тестування}
+\label{sec:testing}
+% =====================================================================
+
+\subsection{Налаштування тестів}
+
+Тестова ціль десктоп-клієнта, \texttt{FileSpaceDesktopTests}, використовує \texttt{XCTest} (запускається через \texttt{swift test} з \texttt{desktop/} або через \texttt{make desktop-test}), а не новіший модуль \texttt{swift-testing}, оскільки в цьому середовищі встановлено лише Command Line Tools від Xcode, які не постачають модуль \texttt{Testing}. Мережеві або залежні від ОС співучасники замінюються in-memory заглушками, тож набір тестів виконується офлайн і детерміновано:
+
+\begin{itemize}[nosep]
+    \item \texttt{SyncViewModel} і \texttt{FilesViewModel} залежать від \texttt{APIClientProtocol}, а не від конкретного \texttt{APIClient}, тож тести підставляють безмережевий \texttt{FakeAPIClient} замість \texttt{URLSession};
+    \item тести \texttt{FolderScanner} і стану синхронізації використовують реальні тимчасові каталоги на диску, а не заглушки файлової системи, оскільки код, що тестується, \emph{сам є} взаємодією з файловою системою;
+    \item \texttt{KeychainStoreTests} працюють із реальним macOS Keychain (in-memory заміни для нього немає), використовуючи виділені ключі, які очищаються в \texttt{tearDown}.
+\end{itemize}
+
+\subsection{Покриття за областями}
+
+Таблиця~\ref{tab:tests} підсумовує набір модульних тестів.
+
+\small
+\begin{longtable}{@{}p{4.8cm}p{1.2cm}p{9.2cm}@{}}
+\caption{Набори модульних тестів у \texttt{desktop/Tests/\allowbreak FileSpaceDesktopTests/}}
+\label{tab:tests} \\
+\toprule
+\textbf{Клас тестів} & \textbf{К-сть} & \textbf{Що покриває} \\
+\midrule
+\endhead
+\texttt{FileRecord\-Decoding\-Tests} & 2 & Декодування \texttt{FileRecord} з точного JSON-формату бекенду, включно з перейменуванням ключа \texttt{extension} $\to$ \texttt{extensionName} \\
+\texttt{SyncStateTests} & 1 & Round-trip \texttt{SyncState}/\texttt{SyncedFileEntry} через кодування у JSON \\
+\texttt{FolderScannerTests} & 4 & Сканування локальної теки: обчислення хешу, пропуск прихованих файлів/підкаталогів та коректне розрізнення ``неможливо прочитати'' від ``не існує'' \\
+\texttt{PreviewSupportTests} & 1 & Лише \texttt{.java}/\texttt{.png} вважаються придатними для перегляду \\
+\texttt{KeychainStoreTests} & 5 & Встановлення/читання/перезапис/видалення токенів у реальному macOS Keychain з ізоляцією ключів \\
+\texttt{APIClientTests} & 6 & Декодування запитів/відповідей, порядок і прогрес chunked-вивантаження, вибір між одноразовим і chunked-вивантаженням, поведінка повтору запиту після 401 з оновленням токена \\
+\texttt{SyncViewModelTests} & 11 & Цикл узгодження: обробка нових/змінених/локально видалених файлів, надсилання маніфесту, виявлення/фіксація конфліктів та всі три способи розв'язання (Keep Local/Remote/Both) \\
+\texttt{FilesViewModelTests} & 7 & Сортування за \emph{``Edited by''} (за зростанням, за спаданням, без урахування регістру) та фільтрація за розширенням (\texttt{.cs}, \texttt{.jpg}, без фільтра), включно з одночасним застосуванням сортування й фільтра \\
+\bottomrule
+\textbf{Разом} & \textbf{37} & \\
+\end{longtable}
+
+\subsection{Покриття сортування та фільтрації}
+\label{sec:variant}
+
+Список файлів сортується за \textbf{``Edited by''} (за зростанням і за спаданням) та фільтрується до \textbf{всіх файлів}, лише файлів \texttt{.cs} або лише файлів \texttt{.jpg}. Ця логіка міститься в \texttt{FilesViewModel.displayedFiles}, \texttt{toggleSort(\_:)} та \texttt{extensionFilter} і перевіряється тестами з \texttt{FilesViewModelTests.swift}:
+
+\begin{itemize}[nosep]
+    \item[] \texttt{testSortByEditedByAscending}
+    \item[] \texttt{testSortByEditedByDescending}
+    \item[] \texttt{testSortByEditedByIsCaseInsensitive}
+    \item[] \texttt{testNoFilterShowsAllExtensions}
+    \item[] \texttt{testFilterByCsExtensionShowsOnlyCsFiles}
+    \item[] \texttt{testFilterByJpgExtensionShowsOnlyJpgFiles}
+    \item[] \texttt{testFilterAndSortByEditedByComposeTogether}
+\end{itemize}
+
+\texttt{FilesViewModel} залежить від \texttt{APIClientProtocol}, а не від конкретного, прив'язаного до мережі \texttt{APIClient} (той самий принцип, що вже використовує \texttt{SyncViewModel}), і саме це дозволяє цим тестам підставляти заглушку та виконуватися офлайн.
+
+\begin{verbatim}
+Test Suite 'All tests' passed at 2026-09-30 10:53:05.
+  Executed 37 tests, with 0 failures (0 unexpected)
+  in 0.190 (0.197) seconds
+\end{verbatim}
+
+% =====================================================================
+\section{Висновки}
+% =====================================================================
+
+Десктоп-клієнт реалізує кожен прецедент, потрібний проєкту, який нативний застосунок macOS може змістовно додати порівняно з веб-клієнтом: повний перегляд файлів із сортуванням за ``Edited by'' та фільтрацією за \texttt{.cs}/\texttt{.jpg}, перегляд вмісту \texttt{.java}/\texttt{.png}, вивантаження/завантаження/видалення, а також -- унікально серед обох клієнтів -- безперервну фонову синхронізацію теки, включно з виявленням конфліктів на основі маніфесту та трибічним (Keep Local/Remote/Both) інтерфейсом розв'язання. З погляду тестування, основні співучасники клієнта (мережа, сканування теки, стан синхронізації, доступ до Keychain, цикл узгодження та сортування/фільтрація списку файлів) мають модульне покриття. Усі 37 тестів набору проходять успішно.
+
+\end{document}

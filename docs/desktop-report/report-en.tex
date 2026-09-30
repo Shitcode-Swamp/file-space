@@ -1,0 +1,230 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Language & fonts ----------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{english}
+
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+
+% ---------- Layout ----------
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+    pdftitle={Desktop Client Report of the Remote File Folder Client Project},
+    pdfauthor={Yana Utochkina}
+}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
+% Screenshot placeholder: renders the real image if #1 exists under
+% img/screenshots/, otherwise a labeled placeholder box naming the expected
+% file, so the document always builds even before screenshots are added.
+\newcommand{\screenshot}[3]{%
+    \begin{figure}[H]
+        \centering
+        \IfFileExists{img/screenshots/#1}{%
+            \includegraphics[width=0.85\linewidth]{img/screenshots/#1}%
+        }{%
+            \fbox{\begin{minipage}[c][5.5cm][c]{0.85\linewidth}
+                \centering
+                \textit{Screenshot placeholder}\\[6pt]
+                \texttt{\small img/screenshots/#1}\\[6pt]
+                \small add the image at this path and rebuild
+            \end{minipage}}%
+        }
+        \caption{#2}
+        \label{#3}
+    \end{figure}
+}
+
+\title{\textbf{Desktop Client Report\\[2pt] \large Remote File Folder Client Project\\(a simplified Google Drive analogue)}}
+\author{Yana Utochkina}
+\date{Stage: Desktop (macOS/SwiftUI) Client -- Design, Usage, and Testing \\ \today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+This report documents the \textbf{macOS desktop client} of the \textbf{Remote File Folder Client} project (\texttt{desktop/Sources/FileSpaceDesktop/}), a simplified analogue of Google Drive with web and desktop clients, a Go backend, PostgreSQL, and local-folder synchronization. It describes the client's internal structure, walks through its use cases with screenshots, and documents its unit test coverage, including its sorting and filtering behavior (sort by \emph{Edited by}, filter by \texttt{.cs}/\texttt{.jpg}).
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Introduction}
+% =====================================================================
+
+The desktop client is one of two front ends (the other being the React web client) to a single Go API and PostgreSQL database, self-hosted on a home Ubuntu server behind a Cloudflare Tunnel. Every use case the system supports through either client -- registration, authentication, browsing files with sortable/filterable attributes, viewing \texttt{.java}/\texttt{.png} content, uploading, downloading, deleting -- is available from the desktop client; it is additionally the \emph{only} client that implements continuous background folder synchronization, since browsers cannot watch a local folder persistently.
+
+% =====================================================================
+\section{Desktop Client Architecture}
+% =====================================================================
+
+\subsection{Internal Structure}
+
+The desktop client's source folder, \texttt{desktop/Sources/\allowbreak FileSpaceDesktop/}, groups its code as follows: SwiftUI views are kept separate from the sync engine (\texttt{DirectoryWatcher}, \texttt{SyncViewModel}, and \texttt{Manifest.swift}'s \texttt{SyncState}/\texttt{FolderScanner}) and from the shared \texttt{APIClient}/\texttt{KeychainStore} networking layer:
+
+\begin{itemize}[nosep]
+    \item \textbf{Views}: \texttt{LoginView}, \texttt{MainView} (file table, sorting/filtering/column visibility), \texttt{FilePreviewView} (\texttt{.java}/\texttt{.png}), \texttt{SyncPanelView} and \texttt{SyncConflicts\allowbreak SectionView} (folder sync controls and conflict resolution UI), \texttt{ContentView} (top-level navigation between logged-out/logged-in state);
+    \item \textbf{View models}: \texttt{FilesViewModel} (file list, sort/filter, upload/download/delete), \texttt{SyncViewModel} (reconcile loop, conflict detection/resolution), \texttt{AppState} (session/auth state);
+    \item \textbf{Networking \& storage}: \texttt{APIClient} (\texttt{URLSession}-based REST client, behind the \texttt{APIClientProtocol} seam used for testing), \texttt{KeychainStore} (token storage via the macOS Keychain), \texttt{Models.swift} (Codable DTOs matching the Go API's JSON shapes);
+    \item \textbf{Sync engine}: \texttt{DirectoryWatcher} (\texttt{FSEvents} wrapper), \texttt{Manifest.swift} (\texttt{FolderScanner}, \texttt{SyncState}, \texttt{SyncedFileEntry}).
+\end{itemize}
+
+The desktop client talks to the Go API server only over HTTPS through the public Cloudflare Tunnel hostname -- the same endpoint the web client's browser JavaScript uses -- passing through the server's \texttt{Handler} $\to$ \texttt{Service} $\to$ \texttt{Repository} layers and, for file content, the \texttt{FileStorage} interface.
+
+\subsection{Synchronization}
+
+Synchronization is the desktop client's most involved feature and the one with no web-client equivalent. On each trigger -- an \texttt{FSEvents} change notification from \texttt{DirectoryWatcher}, or a periodic poll -- \texttt{SyncViewModel} calls \texttt{POST /api/sync/diff} with its \texttt{lastSyncedVersion} and a manifest (name, size, sha256) computed by \texttt{FolderScanner}; the server replies with \texttt{download}/\texttt{delete\_local}/\texttt{conflict} actions plus a \texttt{newVersion}. The client applies those actions, then independently scans its local folder and uploads, re-uploads, or deletes files based on its own persisted \texttt{SyncState}.
+
+\subsubsection*{Conflict resolution}
+
+A \texttt{conflict} action means the same file changed on both sides since the last sync: the server compares the client's submitted manifest (name, size, sha256) against its own record and returns a \texttt{conflict} action carrying the remote side's size, modification time, and last editor whenever the two hashes genuinely disagree. On the desktop client, \texttt{SyncViewModel} records such actions in a published \texttt{conflicts} list rather than resolving them automatically, and \texttt{SyncConflictsSectionView} (part of the existing sync panel) lets the user choose \textbf{Keep Local} (re-upload, overwriting the remote copy), \textbf{Keep Remote} (overwrite the local file), or \textbf{Keep Both} (keep the local file under a renamed copy and adopt the remote version).
+
+% =====================================================================
+\section{Use Cases and Screenshots}
+\label{sec:usecases}
+% =====================================================================
+
+This section walks through the desktop client's use cases, each with a screenshot of the running application.
+
+\subsection{Register and Authenticate}
+
+\emph{Register} (fig.~\ref{fig:ss-register}) creates a new account by username/password; \emph{Authenticate} (fig.~\ref{fig:ss-login}) is required by every other file operation, since the workspace is only reachable after a successful login, after which \texttt{APIClient} stores the returned access/refresh JWT pair in the macOS Keychain via \texttt{KeychainStore}.
+
+\screenshot{01-register.png}{Registration screen}{fig:ss-register}
+\screenshot{02-login.png}{Login screen}{fig:ss-login}
+
+\subsection{Browse Files: Attributes, Columns, Sorting, Filtering}
+
+Figure~\ref{fig:ss-list} shows the main file table with every attribute column visible (name, created, modified, uploaded by, edited by); the name column cannot be hidden, while the others toggle through the ``Columns'' menu (fig.~\ref{fig:ss-columns}).
+
+\screenshot{03-file-list-overview.png}{Main file list with all attribute columns visible}{fig:ss-list}
+\screenshot{04-column-visibility.png}{Columns menu: toggling a non-name column}{fig:ss-columns}
+
+\textbf{Sorting:} the file list sorts by \emph{Edited by}, ascending or descending, by clicking that column header, which cycles \texttt{FilesViewModel.sortDirection} through none~$\to$~ascending~$\to$~descending~$\to$~none (fig.~\ref{fig:ss-sort}).
+
+\screenshot{05-sort-edited-by.png}{File list sorted by ``Edited by''}{fig:ss-sort}
+
+\textbf{Filtering:} the extension dropdown, populated from the extensions actually present among the user's files, filters the list down to just \texttt{.cs} or just \texttt{.jpg} (or back to ``All'') via \texttt{FilesViewModel.extensionFilter} (fig.~\ref{fig:ss-filter}).
+
+\screenshot{06-filter-extension.png}{Extension filter applied (\texttt{.cs} or \texttt{.jpg})}{fig:ss-filter}
+
+\subsection{View File Content}
+
+Clicking a file previews its content if the extension is \texttt{.java} (rendered as text, fig.~\ref{fig:ss-java}) or \texttt{.png} (rendered as an image, fig.~\ref{fig:ss-png}); every other extension is browsed/downloaded but not previewed.
+
+\screenshot{07-preview-java.png}{\texttt{.java} file previewed as text}{fig:ss-java}
+\screenshot{08-preview-png.png}{\texttt{.png} file previewed as an image}{fig:ss-png}
+
+\subsection{Upload, Download, Delete}
+
+Figure~\ref{fig:ss-upload} shows an upload in progress -- large files are split into chunks so no single HTTP request exceeds the Cloudflare Tunnel free-tier body-size limit, with \texttt{uploadProgress} reflecting bytes sent per chunk. Figures~\ref{fig:ss-download} and \ref{fig:ss-delete} show downloading a file to the user's Downloads folder and deleting one from the remote workspace.
+
+\screenshot{09-upload.png}{File upload in progress}{fig:ss-upload}
+\screenshot{10-download.png}{File download}{fig:ss-download}
+\screenshot{11-delete.png}{File deletion}{fig:ss-delete}
+
+\subsection{Synchronize a Local Folder}
+
+Figure~\ref{fig:ss-sync} shows the sync panel with a folder chosen and synchronization running: \texttt{DirectoryWatcher} raises \texttt{FSEvents}-based change notifications, and \texttt{SyncViewModel} also polls periodically, running the reconcile cycle described in \S2.2. Figure~\ref{fig:ss-conflict} shows the same panel when the server reports a genuine conflict: the file is listed with its local/remote size and editor, alongside the Keep Local / Keep Remote / Keep Both actions.
+
+\screenshot{12-sync-panel.png}{Folder sync panel, actively syncing}{fig:ss-sync}
+\screenshot{13-sync-conflict.png}{Folder sync panel showing a detected conflict and its resolution options}{fig:ss-conflict}
+
+% =====================================================================
+\section{Unit Testing}
+\label{sec:testing}
+% =====================================================================
+
+\subsection{Test Setup}
+
+The desktop client's test target, \texttt{FileSpaceDesktopTests}, uses \texttt{XCTest} (run via \texttt{swift test} from \texttt{desktop/}, or \texttt{make desktop-test}) rather than the newer \texttt{swift-testing} module, since this environment ships only the Xcode Command Line Tools, which do not include the \texttt{Testing} module. Networked or OS-dependent collaborators are substituted with in-memory fakes so the suite runs offline and deterministically:
+
+\begin{itemize}[nosep]
+    \item \texttt{SyncViewModel} and \texttt{FilesViewModel} depend on \texttt{APIClientProtocol} rather than the concrete \texttt{APIClient}, so tests inject a no-network \texttt{FakeAPIClient} in place of \texttt{URLSession};
+    \item \texttt{FolderScanner} and sync-state tests use real temporary directories on disk rather than mocking the filesystem, since the code under test \emph{is} filesystem interaction;
+    \item \texttt{KeychainStoreTests} exercise the real macOS Keychain (there is no in-memory substitute for it) using dedicated keys, cleaned up in \texttt{tearDown}.
+\end{itemize}
+
+\subsection{Coverage by Area}
+
+Table~\ref{tab:tests} summarizes the test suite.
+
+\small
+\begin{longtable}{@{}p{4.8cm}p{1.2cm}p{9.2cm}@{}}
+\caption{Unit test suites in \texttt{desktop/Tests/FileSpaceDesktopTests/}}
+\label{tab:tests} \\
+\toprule
+\textbf{Test class} & \textbf{Tests} & \textbf{What it covers} \\
+\midrule
+\endhead
+\texttt{FileRecord\-Decoding\-Tests} & 2 & \texttt{FileRecord} decodes the backend's exact JSON shape, including the \texttt{extension} $\to$ \texttt{extensionName} key remap \\
+\texttt{SyncStateTests} & 1 & \texttt{SyncState}/\texttt{SyncedFileEntry} round-trip through JSON encoding \\
+\texttt{FolderScannerTests} & 4 & Local folder scanning: hash computation, skipping hidden files/subdirectories, and correctly distinguishing ``can't be read'' from ``doesn't exist'' \\
+\texttt{PreviewSupportTests} & 1 & Only \texttt{.java}/\texttt{.png} are treated as previewable \\
+\texttt{KeychainStoreTests} & 5 & Token set/read/overwrite/delete against the real macOS Keychain, with key isolation \\
+\texttt{APIClientTests} & 6 & Request/response decoding, chunked upload ordering and progress, single-shot vs.\ chunked upload selection, and 401-refresh-then-retry behavior \\
+\texttt{SyncViewModelTests} & 11 & The reconcile loop: new/changed/deleted-local file handling, manifest submission, and conflict detection/recording plus all three resolutions (Keep Local/Remote/Both) \\
+\texttt{FilesViewModelTests} & 7 & Sorting by \emph{Edited by} (ascending, descending, case-insensitivity) and filtering by extension (\texttt{.cs}, \texttt{.jpg}, no filter), including sort+filter composed together \\
+\bottomrule
+\textbf{Total} & \textbf{37} & \\
+\end{longtable}
+
+\subsection{Sorting and Filtering Coverage}
+\label{sec:variant}
+
+The file list sorts by \textbf{``Edited by''} (ascending and descending) and filters to \textbf{all files}, only \texttt{.cs} files, or only \texttt{.jpg} files. This logic lives in \texttt{FilesViewModel.displayedFiles}, \texttt{toggleSort(\_:)}, and \texttt{extensionFilter}, and is exercised by \texttt{FilesViewModelTests.swift}:
+
+\begin{itemize}[nosep]
+    \item[] \texttt{testSortByEditedByAscending}
+    \item[] \texttt{testSortByEditedByDescending}
+    \item[] \texttt{testSortByEditedByIsCaseInsensitive}
+    \item[] \texttt{testNoFilterShowsAllExtensions}
+    \item[] \texttt{testFilterByCsExtensionShowsOnlyCsFiles}
+    \item[] \texttt{testFilterByJpgExtensionShowsOnlyJpgFiles}
+    \item[] \texttt{testFilterAndSortByEditedByComposeTogether}
+\end{itemize}
+
+\texttt{FilesViewModel} depends on \texttt{APIClientProtocol} rather than the concrete, network-backed \texttt{APIClient} (the same seam \texttt{SyncViewModel} uses), which is what lets these tests inject a fake client and run offline.
+
+\begin{verbatim}
+Test Suite 'All tests' passed at 2026-09-30 10:53:05.
+  Executed 37 tests, with 0 failures (0 unexpected)
+  in 0.190 (0.197) seconds
+\end{verbatim}
+
+% =====================================================================
+\section{Conclusions}
+% =====================================================================
+
+The desktop client implements every use case the project requires that a native macOS app can meaningfully add over the web client: full file browsing with sorting by ``Edited by'' and filtering by \texttt{.cs}/\texttt{.jpg}, content preview for \texttt{.java}/\texttt{.png}, upload/download/delete, and -- uniquely among the two clients -- continuous background folder synchronization, including manifest-based conflict detection and a three-way (Keep Local/Remote/Both) resolution UI. On the testing side, the client's core collaborators (networking, folder scanning, sync state, Keychain access, the sync reconcile loop, and file-list sorting/filtering) all carry unit test coverage. All 37 tests in the suite pass.
+
+\end{document}
