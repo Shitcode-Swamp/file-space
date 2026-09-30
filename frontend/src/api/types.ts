@@ -56,6 +56,51 @@ export interface ApiErrorBody {
   error: string
 }
 
+// ---- Sync (POST /api/sync/diff) -----------------------------------------
+// Mirrors backend/internal/handler/sync.go's wire shape exactly, and the
+// same protocol the Swift desktop client speaks
+// (desktop/Sources/FileSpaceDesktop/Models.swift's SyncManifestEntryDTO /
+// SyncDiffResponse / SyncActionDTO / SyncConflictDetailsDTO).
+
+/** Per-file manifest entry sent with every sync/diff request (REQUIREMENTS.md
+ * §6.1/§6.6). mtime is carried purely to match the wire shape — the server
+ * doesn't use it for conflict detection, only name + sha256 do. */
+export interface SyncManifestEntry {
+  name: string
+  size: number
+  mtime: string
+  sha256: string
+}
+
+export const SyncActionKind = {
+  download: 'download',
+  deleteLocal: 'delete_local',
+  conflict: 'conflict',
+} as const
+
+export type SyncActionKindValue = (typeof SyncActionKind)[keyof typeof SyncActionKind]
+
+/** Only present when action === 'conflict' — everything the resolution UI
+ * needs to show the incoming server-side version alongside the client's own
+ * local one, without a second round trip. */
+export interface SyncConflictDetails {
+  remoteSize: number
+  remoteModifiedAt: string
+  remoteEditedBy: string
+}
+
+export interface SyncAction {
+  name: string
+  action: SyncActionKindValue
+  remoteVersion: number
+  conflict?: SyncConflictDetails
+}
+
+export interface SyncDiffResponse {
+  newVersion: number
+  actions: SyncAction[]
+}
+
 /** Thrown by the api client whenever a request completes with a non-2xx status. */
 export class ApiError extends Error {
   status: number

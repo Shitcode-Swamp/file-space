@@ -293,3 +293,119 @@ p.error {
   display: block;
   margin: 0 auto;
 }
+
+/* Folder sync (SyncModal.tsx / SyncConflictsSection.tsx). */
+.sync-unsupported {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.sync-folder-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.sync-folder-path {
+  color: var(--text);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.sync-folder-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.sync-folder-actions button {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.sync-folder-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sync-permission-notice {
+  color: var(--accent, #3366cc);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.sync-conflicts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.sync-conflicts-heading {
+  color: #d33;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.sync-conflict-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.sync-conflict-name {
+  font-size: 13px;
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.sync-conflict-details {
+  font-size: 12px;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.sync-conflict-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sync-conflict-actions button {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.sync-conflict-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sync-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sync-log li {
+  font-size: 12px;
+  color: var(--text);
+}

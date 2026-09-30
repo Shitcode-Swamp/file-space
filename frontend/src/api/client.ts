@@ -5,6 +5,8 @@ import type {
   LoginResponse,
   RefreshResponse,
   RegisterResponse,
+  SyncDiffResponse,
+  SyncManifestEntry,
 } from './types'
 import { ApiError } from './types'
 
@@ -397,4 +399,22 @@ export async function uploadFileInChunks(
 
 export async function deleteFile(id: number): Promise<void> {
   await requestJson<void>(`/api/files/${id}`, { method: 'DELETE' })
+}
+
+/**
+ * The one-shot manifest diff behind folder sync (REQUIREMENTS.md §6.6),
+ * matching the exact wire shape backend/internal/handler/sync.go's
+ * diffRequest/diffResponse expect and the Swift desktop client
+ * (SyncViewModel.reconcile()) already speaks. Omitting/emptying manifest
+ * just makes the server fall back to reporting every server-side change as
+ * "download" — see sync.go's Diff.
+ */
+export async function syncDiff(
+  lastSyncedVersion: number,
+  manifest: SyncManifestEntry[],
+): Promise<SyncDiffResponse> {
+  return requestJson<SyncDiffResponse>('/api/sync/diff', {
+    method: 'POST',
+    body: { lastSyncedVersion, manifest },
+  })
 }

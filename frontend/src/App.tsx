@@ -16,6 +16,8 @@ import { useAuth } from './auth/AuthContext'
 import { LoginPage } from './auth/LoginPage'
 import { FilePreviewModal, type FilePreviewState } from './FilePreviewModal'
 import { SettingsModal } from './SettingsModal'
+import { SyncModal } from './sync/SyncModal'
+import { SyncProvider } from './sync/SyncContext'
 import './App.css'
 
 function headerLabel(header: unknown, fallbackId: string): string {
@@ -72,6 +74,7 @@ function DriveView() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [preview, setPreview] = useState<FilePreviewState | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [syncOpen, setSyncOpen] = useState(false)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Counts nested dragenter/dragleave pairs so the overlay doesn't flicker
@@ -350,6 +353,9 @@ function DriveView() {
           <span>
             Logged in as <strong>{user?.username}</strong>
           </span>
+          <button type="button" onClick={() => setSyncOpen(true)}>
+            Folder Sync
+          </button>
           <button type="button" onClick={() => setSettingsOpen(true)}>
             Settings
           </button>
@@ -506,6 +512,7 @@ function DriveView() {
       {settingsOpen && (
         <SettingsModal columns={table.getAllLeafColumns()} onClose={() => setSettingsOpen(false)} />
       )}
+      {syncOpen && <SyncModal onClose={() => setSyncOpen(false)} />}
     </div>
   )
 }
@@ -517,7 +524,11 @@ function App() {
     return <LoginPage />
   }
 
-  return <DriveView />
+  return (
+    <SyncProvider>
+      <DriveView />
+    </SyncProvider>
+  )
 }
 
 export default App
