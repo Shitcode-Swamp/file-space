@@ -8,7 +8,12 @@ struct SyncPanelView: View {
             HStack {
                 Text("Folder sync").font(.headline)
                 Spacer()
-                Text(viewModel.statusMessage).foregroundStyle(.secondary).font(.caption)
+                if viewModel.isSyncing {
+                    ProgressView().scaleEffect(0.6).frame(width: 14, height: 14)
+                    Text("Syncing…").foregroundStyle(.secondary).font(.caption)
+                } else {
+                    Text(viewModel.statusMessage).foregroundStyle(.secondary).font(.caption)
+                }
             }
             HStack {
                 Text(viewModel.folderPath ?? "No folder selected")
@@ -25,10 +30,13 @@ struct SyncPanelView: View {
                         .disabled(viewModel.folderPath == nil)
                 }
             }
+            if !viewModel.conflicts.isEmpty {
+                SyncConflictsSectionView(viewModel: viewModel)
+            }
             if !viewModel.log.isEmpty {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(viewModel.log.suffix(10)) { line in
+                        ForEach(viewModel.log.suffix(10).reversed()) { line in
                             Text(line.text).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
