@@ -1,0 +1,218 @@
+\documentclass[12pt,a4paper]{article}
+
+% ---------- Language & fonts ----------
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{english}
+
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+
+% ---------- Layout ----------
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{microtype}
+\setlength{\emergencystretch}{3em}
+\sloppy
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black,
+    pdftitle={Web Client Report of the Remote File Folder Client Project},
+    pdfauthor={Yana Utochkina}
+}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection.}{0.6em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{0.6em}{}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
+% Screenshot placeholder: renders the real image if #1 exists under
+% img/screenshots/, otherwise a labeled placeholder box naming the expected
+% file, so the document always builds even before screenshots are added.
+\newcommand{\screenshot}[3]{%
+    \begin{figure}[H]
+        \centering
+        \IfFileExists{img/screenshots/#1}{%
+            \includegraphics[width=0.85\linewidth]{img/screenshots/#1}%
+        }{%
+            \fbox{\begin{minipage}[c][5.5cm][c]{0.85\linewidth}
+                \centering
+                \textit{Screenshot placeholder}\\[6pt]
+                \texttt{\small img/screenshots/#1}\\[6pt]
+                \small add the image at this path and rebuild
+            \end{minipage}}%
+        }
+        \caption{#2}
+        \label{#3}
+    \end{figure}
+}
+
+\title{\textbf{Web Client Report\\[2pt] \large Remote File Folder Client Project\\(a simplified Google Drive analogue)}}
+\author{Yana Utochkina}
+\date{Stage: Web (React/TypeScript) Client -- Design, Usage, and Testing \\ \today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+This report documents the \textbf{React web client} of the \textbf{Remote File Folder Client} project (\texttt{frontend/src/}), a simplified analogue of Google Drive with web and desktop clients, a Go backend, PostgreSQL, and local-folder synchronization. It describes the client's internal structure, walks through its use cases with screenshots, and documents its unit test coverage, including its folder-sync feature: a browser-side port of the desktop client's sync engine, built on the File System Access API.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Introduction}
+% =====================================================================
+
+The web client is one of two front ends (the other being the Swift desktop client) to a single Go API and PostgreSQL database, self-hosted on a home Ubuntu server behind a Cloudflare Tunnel. It covers every core workspace use case -- registration, authentication, browsing files with sortable/filterable attributes, viewing \texttt{.java}/\texttt{.png} content, uploading (including drag-and-drop), downloading, deleting -- and, in Chromium-based browsers, folder synchronization against the same server-side diff protocol the desktop client uses. Unlike the desktop client, a browser cannot watch a local folder continuously in the background, so sync here is a manual, one-shot action rather than an always-running service.
+
+% =====================================================================
+\section{Web Client Architecture}
+% =====================================================================
+
+\subsection{Internal Structure}
+
+The web client's source folder, \texttt{frontend/src/}, is organized as follows:
+
+\begin{itemize}[nosep]
+    \item \textbf{\texttt{App.tsx}}: the main \texttt{DriveView} component -- TanStack Query for server state (a paginated \texttt{useInfiniteQuery} for the visible file list, a separate \texttt{useQuery} for the full extension list that feeds the filter dropdown), TanStack Table for sorting and column visibility, TanStack Virtual for windowed row rendering, and drag-and-drop upload handling;
+    \item \textbf{\texttt{columns.tsx}}: the file table's column definitions (name, created, modified, uploaded by, edited by, actions), including which extensions get a clickable preview link on their name cell;
+    \item \textbf{\texttt{auth/}}: \texttt{AuthContext.tsx} (a React Context + hook holding the logged-in user and JWT access/refresh tokens, persisted to \texttt{localStorage}) and \texttt{LoginPage.tsx} (the combined login/register form);
+    \item \textbf{\texttt{api/}}: \texttt{client.ts} (a \texttt{fetch}-based REST client with a one-refresh-one-retry policy on an expired access token, and a chunked-upload path for large files) and \texttt{types.ts} (the wire-format DTOs);
+    \item \textbf{\texttt{SettingsModal.tsx} / \texttt{FilePreviewModal.tsx}}: column-visibility and file-content-preview modals, sharing the app's generic modal chrome;
+    \item \textbf{\texttt{sync/}}: the folder-sync feature -- \texttt{hash.ts}, \texttt{folderScanner.ts}, \texttt{storage.ts}, \texttt{reconcile.ts} (the sync algorithm and state), and \texttt{SyncContext.tsx}/\texttt{SyncModal.tsx}/\texttt{SyncConflictsSection.tsx} (its React state and UI).
+\end{itemize}
+
+The web client talks to the Go API server over HTTPS at the same public Cloudflare Tunnel hostname the desktop client uses, and renders the same underlying file records the desktop client and the server both work with.
+
+\subsection{Synchronization}
+
+Folder synchronization mirrors the desktop client's sync engine, adapted to what a browser can actually do: there is no background folder watcher, so a \textbf{Sync now} button drives a single reconcile pass on demand. Clicking it: scans the chosen folder via the File System Access API's \texttt{FileSystemDirectoryHandle}, computes a manifest (name, size, SHA-256 per file, hashed with \texttt{crypto.subtle}), sends it together with the last-synced version to \texttt{POST /api/sync/diff} -- the same endpoint and protocol the desktop client speaks -- and applies the returned \texttt{download}/\texttt{delete\_local}/\texttt{conflict} actions before uploading any new or changed local files and deleting the remote copies of any locally-removed ones. The sync cursor and per-file bookkeeping persist across page reloads in IndexedDB, alongside the chosen folder's handle (which the browser can reuse without asking the user to reselect the folder every time, subject to a fresh permission grant per session).
+
+A \texttt{conflict} action means the same file changed on both sides since the last sync. It is never resolved automatically: it is shown to the user with the local and remote size/editor, and \textbf{Keep Local} (re-upload, overwriting the remote copy), \textbf{Keep Remote} (overwrite the local file), or \textbf{Keep Both} (keep the local edit under a renamed copy and adopt the remote version) resolve it, exactly matching the desktop client's own three-way resolution.
+
+The File System Access API is available only in Chromium-based browsers (Chrome, Edge, Brave); on any other browser, the sync panel shows a plain message explaining this instead of attempting to use an API that isn't there.
+
+% =====================================================================
+\section{Use Cases and Screenshots}
+\label{sec:usecases}
+% =====================================================================
+
+This section walks through the web client's use cases, each with a screenshot of the running application.
+
+\subsection{Register and Authenticate}
+
+\emph{Register} (fig.~\ref{fig:ss-register}) and \emph{Log in} (fig.~\ref{fig:ss-login}) are two modes of the same form (\texttt{LoginPage.tsx}); a successful call to either stores the returned access/refresh JWT pair and the username in \texttt{localStorage} via \texttt{AuthContext}, after which every other view becomes reachable.
+
+\screenshot{01-register.png}{Registration screen}{fig:ss-register}
+\screenshot{02-login.png}{Login screen}{fig:ss-login}
+
+\subsection{Browse Files: Attributes, Columns, Sorting, Filtering}
+
+Figure~\ref{fig:ss-list} shows the main file table with every attribute column visible (name, created, modified, uploaded by, edited by); the name and actions columns cannot be hidden, while the others toggle through the Settings modal (fig.~\ref{fig:ss-columns}).
+
+\screenshot{03-file-list-overview.png}{Main file list with all attribute columns visible}{fig:ss-list}
+\screenshot{04-column-visibility.png}{Settings modal: toggling a non-name column}{fig:ss-columns}
+
+\textbf{Sorting:} clicking a column header sorts the table by that column, ascending or descending, shown by an arrow indicator next to the header (fig.~\ref{fig:ss-sort} sorts by \emph{Edited by}). Sorting and filtering are both applied server-side -- each change re-requests the current page from the API with the corresponding \texttt{sort}/\texttt{order}/\texttt{extension} query parameters, rather than re-ordering an already-fetched page in the browser.
+
+\screenshot{05-sort-edited-by.png}{File list sorted by ``Edited by''}{fig:ss-sort}
+
+\textbf{Filtering:} the extension dropdown, populated from every extension actually present among the user's files (fetched independently of the current filter, so the option list never collapses to just the selected extension), filters the visible table down to just that extension or back to ``All files'' (fig.~\ref{fig:ss-filter}).
+
+\screenshot{06-filter-extension.png}{Extension filter applied}{fig:ss-filter}
+
+\subsection{View File Content}
+
+Clicking a file's name previews its content if the extension is \texttt{.java} (rendered as text, fig.~\ref{fig:ss-java}) or \texttt{.png} (rendered as an image, fig.~\ref{fig:ss-png}); every other extension's name is plain, non-clickable text -- it can still be downloaded, just not previewed inline.
+
+\screenshot{07-preview-java.png}{\texttt{.java} file previewed as text}{fig:ss-java}
+\screenshot{08-preview-png.png}{\texttt{.png} file previewed as an image}{fig:ss-png}
+
+\subsection{Upload, Download, Delete}
+
+Files can be uploaded either through the file picker and ``Upload'' button, or by dragging them anywhere onto the page -- a full-page overlay appears while a drag carrying files is in progress (fig.~\ref{fig:ss-dragdrop}). Figure~\ref{fig:ss-upload} shows an upload in progress: large files are split into chunks so no single HTTP request exceeds the Cloudflare Tunnel free-tier body-size limit, with a progress bar per file reflecting bytes sent per chunk. Figures~\ref{fig:ss-download} and \ref{fig:ss-delete} show downloading a file and deleting one from the workspace.
+
+\screenshot{09-drag-drop.png}{Drop overlay shown while dragging files onto the page}{fig:ss-dragdrop}
+\screenshot{10-upload.png}{File upload in progress}{fig:ss-upload}
+\screenshot{11-download.png}{File download}{fig:ss-download}
+\screenshot{12-delete.png}{File deletion}{fig:ss-delete}
+
+\subsection{Synchronize a Local Folder}
+
+Figure~\ref{fig:ss-sync} shows the folder sync panel with a folder chosen and a sync just completed: the chosen folder's name, the ``Sync now'' button, and a short log of what the last sync did. Figure~\ref{fig:ss-conflict} shows the same panel when a sync reports a genuine conflict: the file is listed with its local/remote size and editor, alongside the Keep Local / Keep Remote / Keep Both actions.
+
+\screenshot{13-sync-panel.png}{Folder sync panel after a completed sync}{fig:ss-sync}
+\screenshot{14-sync-conflict.png}{Folder sync panel showing a detected conflict and its resolution options}{fig:ss-conflict}
+
+% =====================================================================
+\section{Unit Testing}
+\label{sec:testing}
+% =====================================================================
+
+\subsection{Test Setup}
+
+The web client's tests run under Vitest with \texttt{jsdom}, using React Testing Library for component tests. Networked or browser-only collaborators are substituted so the suite runs deterministically and without a real backend, browser folder picker, or IndexedDB:
+
+\begin{itemize}[nosep]
+    \item \texttt{api/client.test.ts} stubs the global \texttt{fetch} and \texttt{XMLHttpRequest} (the latter used only by the chunked-upload path, since \texttt{fetch} has no upload-progress event) via \texttt{vi.stubGlobal};
+    \item \texttt{App.test.tsx} mocks only \texttt{listFiles}/\texttt{uploadFileInChunks} from the API client module, leaving every other export (token storage, the unauthorized-listener hook, ...) real, so \texttt{AuthContext} hydration behaves exactly as in production;
+    \item \texttt{sync/reconcile.test.ts} and \texttt{sync/folderScanner.test.ts} use a small hand-rolled in-memory fake of \texttt{FileSystemDirectoryHandle}/\texttt{FileSystemFileHandle} (jsdom has no real File System Access API), and a fake API client mirroring the real module's exported functions;
+    \item \texttt{sync/storage.ts} is written behind an injectable key-value store interface specifically so \texttt{sync/storage.test.ts} can substitute an in-memory \texttt{Map} instead of real IndexedDB (also absent from jsdom);
+    \item \texttt{sync/hash.test.ts} needs no mock at all -- Node's built-in \texttt{crypto.subtle} implements the real Web Crypto API, so the test hashes real bytes and checks them against the standard \texttt{sha256("")} vector.
+\end{itemize}
+
+\subsection{Coverage by Area}
+
+Table~\ref{tab:tests} summarizes the test suite.
+
+\small
+\begin{longtable}{@{}p{3.6cm}p{1.1cm}p{10.5cm}@{}}
+\caption{Test suites in \texttt{frontend/src/}}
+\label{tab:tests} \\
+\toprule
+\textbf{Test file} & \textbf{Tests} & \textbf{What it covers} \\
+\midrule
+\endhead
+\texttt{api/\allowbreak client.test.ts} & 11 & Bearer-token attachment, the one-refresh-one-retry policy on a 401 (both the success and the refresh-also-fails path), response decoding including the \texttt{X-Has-More} header, and the chunked-upload path: splitting, per-chunk progress, abort-on-failure, 401-retry mid-upload, and the single-shot-vs-chunked size threshold \\
+\texttt{auth/\allowbreak AuthContext.\allowbreak test.tsx} & 5 & Login/register/logout state transitions, \texttt{localStorage} persistence under the shared token keys, and hydrating an already-logged-in user from storage at mount without a fresh network call \\
+\texttt{App.test.tsx} & 3 & The extension-filter dropdown's option list staying independent of the currently-applied filter, and drag-and-drop upload including the drop overlay showing and hiding \\
+\texttt{sync/\allowbreak hash.test.ts} & 2 & SHA-256 hex encoding, including the standard \texttt{sha256("")} test vector \\
+\texttt{sync/\allowbreak folderScanner.\allowbreak test.ts} & 3 & Folder scanning: size/mtime/sha256 computation, skipping dotfiles and subdirectories, and reporting an unreadable file separately from a missing one \\
+\texttt{sync/\allowbreak storage.test.ts} & 5 & Sync state round-tripping through the key-value store, and \texttt{selectDirectory}'s reset-on-different-folder versus preserve-on-same-folder behavior \\
+\texttt{sync/\allowbreak reconcile.\allowbreak test.ts} & 14 & The reconcile algorithm's \texttt{download}/\texttt{delete\_local}/\texttt{conflict} handling, both same-cycle staleness-exclusion cases (a just-downloaded file, a just-server-deleted file), all three conflict resolutions, and the conflict-copy naming convention \\
+\bottomrule
+\textbf{Total} & \textbf{43} & \\
+\end{longtable}
+
+Sorting and filtering themselves are applied server-side (the Go backend's \texttt{sort}/\texttt{order}/\texttt{extension} query parameters, exercised by the backend's own test suite); on the frontend side, \texttt{App.test.tsx} verifies that changing the filter sends the right parameter and that the dropdown's own option list stays independent of it, rather than re-testing the backend's sort/filter logic a second time.
+
+\begin{verbatim}
+Test Files  7 passed (7)
+     Tests  43 passed (43)
+\end{verbatim}
+
+% =====================================================================
+\section{Conclusions}
+% =====================================================================
+
+The web client covers the full set of core workspace use cases -- browsing with server-driven sorting and filtering, content preview for \texttt{.java}/\texttt{.png}, upload (including drag-and-drop), download, delete -- and, on Chromium-based browsers, folder synchronization against the same manifest-diff protocol and conflict model the desktop client uses, adapted to a manual one-shot action in place of a background watcher. Its architecture follows the same layering as the rest of the project: a thin \texttt{api/} client speaking the Go backend's wire format, React Query/Table/Virtual managing server state and the file table, and the \texttt{sync/} folder isolating the File System Access API and IndexedDB behind the same kind of injectable seams the Swift client uses for its own testability. All 43 tests in the suite pass.
+
+\end{document}
