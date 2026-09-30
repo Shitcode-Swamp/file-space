@@ -31,9 +31,11 @@ enum APIError: LocalizedError {
 protocol APIClientProtocol: Sendable {
     func listFiles() async throws -> [FileRecord]
     func downloadFile(id: Int64) async throws -> (data: Data, filename: String?)
+    func fetchContent(id: Int64) async throws -> Data
     func uploadFile(fileURL: URL) async throws -> FileRecord
+    func uploadFile(fileURL: URL, onProgress: @escaping @MainActor @Sendable (Int64, Int64) -> Void) async throws -> FileRecord
     func deleteFile(id: Int64) async throws
-    func syncDiff(lastSyncedVersion: Int64) async throws -> SyncDiffResponse
+    func syncDiff(lastSyncedVersion: Int64, manifest: [SyncManifestEntryDTO]) async throws -> SyncDiffResponse
 }
 
 /// Stateless except for its own URLSession; all session state (tokens)
@@ -65,9 +67,18 @@ final class APIClient: APIClientProtocol, Sendable {
         self.encoder = JSONEncoder()
     }
 
+    /// Points at the deployed server (REQUIREMENTS.md §5.6) by default —
+    /// this is a single-user personal drive, not a multi-tenant client, so
+    /// there's exactly one real server it ever talks to. FILESPACE_API_URL
+    /// overrides this for local development (e.g. `swift run` against
+    /// `make backend-run`'s localhost:8080); it has no effect on a
+    /// double-clicked .app/.dmg launch, since GUI-launched apps don't
+    /// inherit Terminal/shell environment variables — only a process
+    /// launched from a shell (like `swift run`) sees it.
     static var defaultBaseURL: URL {
-        let raw = ProcessInfo.processInfo.environment["FILESPACE_API_URL"] ?? "http://localhost:8080"
-        return URL(string: raw) ?? URL(string: "http://localhost:8080")!
+        let productionURL = "https://drive.shitcode-swamp.org"
+        let raw = ProcessInfo.processInfo.environment["FILESPACE_API_URL"] ?? productionURL
+        return URL(string: raw) ?? URL(string: productionURL)!
     }
 
     private func url(_ path: String) -> URL {
@@ -281,8 +292,15 @@ final class APIClient: APIClientProtocol, Sendable {
 
     // MARK: - Sync
 
-    func syncDiff(lastSyncedVersion: Int64) async throws -> SyncDiffResponse {
-        let request = try jsonRequest("api/sync/diff", method: "POST", body: SyncDiffRequest(lastSyncedVersion: lastSyncedVersion))
+    /// manifest defaults to empty so callers that predate conflict detection
+    /// (or genuinely have nothing local yet) get the old download/
+    /// delete_local-only behavior — see diffRequest's doc comment in
+    /// backend/internal/handler/sync.go.
+    func syncDiff(lastSyncedVersion: Int64, manifest: [SyncManifestEntryDTO] = []) async throws -> SyncDiffResponse {
+        let request = try jsonRequest(
+            "api/sync/diff", method: "POST",
+            body: SyncDiffRequest(lastSyncedVersion: lastSyncedVersion, manifest: manifest)
+        )
         let (data, _) = try await send(request)
         return try decoder.decode(SyncDiffResponse.self, from: data)
     }
@@ -291,7 +309,7 @@ final class APIClient: APIClientProtocol, Sendable {
 
     private struct Credentials: Encodable { let username: String; let password: String }
     private struct RefreshRequest: Encodable { let refreshToken: String }
-    private struct SyncDiffRequest: Encodable { let lastSyncedVersion: Int64 }
+    private struct SyncDiffRequest: Encodable { let lastSyncedVersion: Int64; let manifest: [SyncManifestEntryDTO] }
     private struct InitiateUploadRequest: Encodable { let filename: String; let size: Int64 }
     private struct InitiateUploadResponse: Decodable { let uploadId: String; let chunkSize: Int64 }
 

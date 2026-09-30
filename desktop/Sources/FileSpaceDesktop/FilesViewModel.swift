@@ -84,11 +84,11 @@ final class FilesViewModel: ObservableObject {
     // chunk finishes uploading. Empty when no upload is in progress.
     @Published private(set) var uploadProgress: [UploadProgress] = []
 
-    private let api: APIClient
+    private let api: APIClientProtocol
     private let onUnauthorized: @MainActor () -> Void
     private var pollTask: Task<Void, Never>?
 
-    init(api: APIClient, onUnauthorized: @escaping @MainActor () -> Void) {
+    init(api: APIClientProtocol, onUnauthorized: @escaping @MainActor () -> Void) {
         self.api = api
         self.onUnauthorized = onUnauthorized
     }
