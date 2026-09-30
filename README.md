@@ -80,12 +80,14 @@ Secrets (`DATABASE_URL`, `JWT_SECRET`, `POSTGRES_PASSWORD`, `TUNNEL_TOKEN`) are 
 
 ## Deployment
 
-The full stack (API, Postgres, `cloudflared`) runs together via Docker Compose on the Ubuntu host:
+The full stack (API, Postgres, `web`, `cloudflared`) runs together via Docker Compose on the Ubuntu host, under the fixed project name `filespace` (pinned by `name: filespace` in `deploy/docker-compose.yml`, so the command below always targets the same containers no matter which directory it's run from):
 
 ```bash
 cd deploy
 cp ../.env.example ../.env   # fill in real secrets
 docker compose --env-file ../.env up -d --build
 ```
+
+To update after pulling new commits, re-run that same command from `deploy/`: Compose only rebuilds and restarts the services whose image actually changed (e.g. just `web` after a frontend-only change) and leaves the rest running untouched. To update just one service explicitly, append its name, e.g. `docker compose --env-file ../.env up -d --build web`.
 
 `cloudflared` exposes the API on a public hostname via an outbound-only tunnel, without opening inbound ports.

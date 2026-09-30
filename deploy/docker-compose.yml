@@ -8,6 +8,15 @@
 #
 # Secrets (DATABASE_URL, JWT_SECRET, POSTGRES_PASSWORD, TUNNEL_TOKEN) are
 # never hardcoded here — they come from the environment / .env file.
+#
+# `name` pins the Compose project name to "filespace" regardless of which
+# directory (or what it's called) you run `docker compose` from. Without
+# this, Compose falls back to the current directory's name as the project
+# name — running the command from a directory called "deploy" instead of
+# the original "filespace" one creates a second, parallel stack
+# (deploy-api-1, deploy-web-1, ...) rather than updating the existing
+# filespace-* containers in place.
+name: filespace
 
 services:
   api:
